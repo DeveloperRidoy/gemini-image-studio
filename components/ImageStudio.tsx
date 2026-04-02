@@ -291,7 +291,7 @@ export function ImageStudio() {
     } finally {
       setLoading(false);
     }
-  }
+  } 
 
   const inputSections = (
     <>
