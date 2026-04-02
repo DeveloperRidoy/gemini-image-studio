@@ -3,7 +3,7 @@
 A full-height **Next.js** web app for generating and editing images with Google’s **Gemini API** (`@google/genai`). It wraps `generateContent` for image-capable models, exposes model-specific options (aspect ratio, resolution, grounding, thinking), and shows **approximate cost estimates in CAD** before you run a job.
 
 ---
-
+ 
 ## Features
  
 | Area                 | Details                                                                                                                                                                                                    |
