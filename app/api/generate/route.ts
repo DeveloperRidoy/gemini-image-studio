@@ -5,6 +5,8 @@ import {
   type Part,
 } from "@google/genai";
 import { NextResponse } from "next/server";
+import { auth } from "@/auth";
+import { isAllowedEmail } from "@/lib/allowed-emails";
 import {
   aspectRatiosForModel,
   getModelDef,
@@ -116,6 +118,14 @@ function buildConfig(
 }
 
 export async function POST(req: Request) {
+  const session = await auth();
+  if (!session?.user?.email || !isAllowedEmail(session.user.email)) {
+    return NextResponse.json(
+      { error: "Sign in with an allowed Google account to generate images." },
+      { status: 401 },
+    );
+  }
+
   const apiKey =
     process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? process.env.GEMINI_API_KEY;
   if (!apiKey) {

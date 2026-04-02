@@ -1,5 +1,6 @@
 "use client";
 
+import { signIn, useSession } from "next-auth/react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   IMAGE_MODELS,
@@ -14,6 +15,7 @@ import {
   effectiveImageSizeForModel,
   USD_TO_CAD_APPROX,
 } from "@/lib/cost-estimate";
+import { UserMenu } from "@/components/UserMenu";
 
 type GoogleSearchMode = "off" | "web" | "web_image";
 
@@ -106,6 +108,7 @@ function useMediaQuery(query: string) {
 }
 
 export function ImageStudio() {
+  const { data: session, status: sessionStatus } = useSession();
   const [modelId, setModelId] = useState<ImageModelId>(
     "gemini-3.1-flash-image-preview",
   );
@@ -134,6 +137,7 @@ export function ImageStudio() {
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<ApiResult[] | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
+  const [authGateOpen, setAuthGateOpen] = useState(false);
   const isXl = useMediaQuery(XL_MEDIA);
 
   const def = getModelDef(modelId);
@@ -165,6 +169,15 @@ export function ImageStudio() {
       referenceImagesRef.current.forEach((r) => URL.revokeObjectURL(r.preview));
     };
   }, []);
+
+  useEffect(() => {
+    if (!authGateOpen) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setAuthGateOpen(false);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [authGateOpen]);
 
   async function addReferenceFiles(fileList: FileList | null) {
     if (!fileList?.length) return;
@@ -244,13 +257,22 @@ export function ImageStudio() {
   async function onGenerate() {
     setLastError(null);
     setResults(null);
-    if (promptsToSend.length < 200) {
-      setLastError(
-        batchMode
-          ? "Add at least one prompt (non-empty text box). "
-          : "Enter a prompt with at least 200 characters.",
-      );
+    if (sessionStatus === "loading") return;
+    if (!session?.user) {
+      setAuthGateOpen(true);
       return;
+    }
+    if (batchMode) {
+      if (promptsToSend.length === 0) {
+        setLastError("Add at least one prompt (non-empty text box). ");
+        return;
+      }
+    } else {
+      const single = promptsToSend[0] ?? "";
+      if (single.length < 200) {
+        setLastError("Enter a prompt with at least 200 characters.");
+        return;
+      }
     }
 
     setLoading(true);
@@ -885,8 +907,81 @@ export function ImageStudio() {
     </div>
   );
 
+  const authGateDialog =
+    authGateOpen ? (
+      <div
+        className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6"
+        role="presentation"
+      >
+        <button
+          type="button"
+          className="absolute inset-0 bg-zinc-950/70 backdrop-blur-sm transition hover:bg-zinc-950/75"
+          aria-label="Close sign-in prompt"
+          onClick={() => setAuthGateOpen(false)}
+        />
+        <div
+          role="dialog"
+          aria-modal
+          aria-labelledby="auth-gate-title"
+          className="relative z-10 w-full max-w-md rounded-2xl border border-zinc-700/80 bg-zinc-900/95 p-6 shadow-2xl shadow-black/50 ring-1 ring-white/[0.06] backdrop-blur-xl"
+        >
+          <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-emerald-500/10 ring-1 ring-emerald-500/25">
+            <svg
+              className="h-6 w-6 text-emerald-400"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={1.5}
+              aria-hidden
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z"
+              />
+            </svg>
+          </div>
+          <h2
+            id="auth-gate-title"
+            className="text-lg font-semibold tracking-tight text-zinc-100"
+          >
+            Sign in to generate
+          </h2>
+          <p className="mt-3 text-sm leading-relaxed text-zinc-400">
+            Generating images requires signing in with Google. Only accounts on
+            the project owner&apos;s allowed list can use this app—if you are
+            not on that list, sign-in may succeed but generation will still be
+            blocked.
+          </p>
+          <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <button
+              type="button"
+              onClick={() => setAuthGateOpen(false)}
+              className="rounded-xl border border-zinc-600/80 bg-zinc-800/50 px-4 py-2.5 text-sm font-medium text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setAuthGateOpen(false);
+                void signIn("google", {
+                  callbackUrl:
+                    typeof window !== "undefined" ? window.location.href : "/",
+                });
+              }}
+              className="rounded-xl bg-gradient-to-r from-emerald-500 via-emerald-600 to-teal-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-emerald-950/30 transition hover:from-emerald-400 hover:via-emerald-500 hover:to-teal-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/50"
+            >
+              Continue with Google
+            </button>
+          </div>
+        </div>
+      </div>
+    ) : null;
+
   return (
     <div className="relative flex h-dvh max-h-dvh flex-col overflow-hidden bg-zinc-950 text-zinc-100">
+      {authGateDialog}
       <div
         className="pointer-events-none fixed inset-0 -z-10 bg-zinc-950"
         aria-hidden
@@ -906,8 +1001,8 @@ export function ImageStudio() {
 
       <div className="relative z-0 flex min-h-0 flex-1 flex-col">
         <header className="shrink-0 border-b border-zinc-800/60 bg-zinc-950/60 px-4 py-4 backdrop-blur-md sm:px-6 sm:py-5">
-          <div className="mx-auto flex max-w-[1600px] flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-            <div>
+          <div className="mx-auto flex max-w-[1600px] flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0 flex-1">
               <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-zinc-700/50 bg-zinc-900/60 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-400">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.85)]" />
                 Gemini API
@@ -916,26 +1011,10 @@ export function ImageStudio() {
                 Gemini Image Studio
               </h1>
             </div>
-            <p className="max-w-xl text-xs leading-relaxed text-zinc-500 sm:text-right sm:text-sm">
-              Generate with the{" "}
-              <a
-                className="text-emerald-400/90 underline decoration-emerald-500/30 underline-offset-2 transition hover:text-emerald-300"
-                href="https://ai.google.dev/gemini-api/docs/image-generation"
-                target="_blank"
-                rel="noreferrer"
-              >
-                Gemini API
-              </a>
-              . Set{" "}
-              <code className="rounded-md border border-zinc-700/80 bg-zinc-900/80 px-1.5 py-0.5 font-mono text-[11px] text-emerald-200/90 sm:text-[12px]">
-                GOOGLE_GENERATIVE_AI_API_KEY
-              </code>{" "}
-              in{" "}
-              <code className="rounded-md border border-zinc-700/80 bg-zinc-900/80 px-1.5 py-0.5 font-mono text-[11px] text-zinc-300 sm:text-[12px]">
-                .env.local
-              </code>
-              .
-            </p>
+            <div className="flex shrink-0 flex-col items-stretch gap-2 sm:items-end">
+              <UserMenu />
+              
+            </div>
           </div>
         </header>
 
