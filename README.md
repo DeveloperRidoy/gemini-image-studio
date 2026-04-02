@@ -5,7 +5,7 @@ A full-height **Next.js** web app for generating and editing images with Googleâ
 ---
 
 ## Features
-
+ 
 | Area                 | Details                                                                                                                                                                                                    |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Models**           | Gemini 2.5 Flash Image, Gemini 3 Pro Image (preview), Gemini 3.1 Flash Image (preview). Each entry in `lib/models.ts` has a short `selectLabel` for the dropdown plus the real `apiId` in parentheses.     |
