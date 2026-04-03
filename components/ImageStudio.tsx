@@ -548,7 +548,7 @@ export function ImageStudio() {
         referenceFileRefs,
       };
 
-      if (batchMode && promptsQueue.length > 0) {
+      if (promptsQueue.length > 0) {
         setResults(
           promptsQueue.map((p) => ({
             prompt: p,
@@ -564,7 +564,6 @@ export function ImageStudio() {
         failedPrompt: string,
         message: string,
       ) => {
-        if (!batchMode) return;
         setResults((prev) => {
           if (!prev || prev.length !== promptsQueue.length) return prev;
           return prev.map((r, idx) => {
@@ -577,7 +576,7 @@ export function ImageStudio() {
                 pending: false,
               };
             }
-            if (idx > failedIndex && r.pending) {
+            if (batchMode && idx > failedIndex && r.pending) {
               return {
                 ...r,
                 pending: false,
