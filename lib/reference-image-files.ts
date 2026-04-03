@@ -47,23 +47,25 @@ export function collectImageFilesFromDataTransfer(
 
   const push = (f: File | null) => {
     if (!f || !f.type.startsWith("image/")) return;
-    const key = `${f.name}-${f.size}-${f.lastModified}`;
+    // Same bytes often appear in both `files` and `items` with different `name` (e.g. "" vs "image.png").
+    const key = `${f.size}\0${f.lastModified}\0${f.type}`;
     if (seen.has(key)) return;
     seen.add(key);
     out.push(f);
   };
 
-  if (dataTransfer.files?.length) {
-    for (let i = 0; i < dataTransfer.files.length; i++) {
-      push(dataTransfer.files.item(i));
+  const items = dataTransfer.items;
+  if (items?.length) {
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item?.kind !== "file") continue;
+      push(item.getAsFile());
     }
   }
 
-  if (dataTransfer.items?.length) {
-    for (let i = 0; i < dataTransfer.items.length; i++) {
-      const item = dataTransfer.items[i];
-      if (item?.kind !== "file") continue;
-      push(item.getAsFile());
+  if (out.length === 0 && dataTransfer.files?.length) {
+    for (let i = 0; i < dataTransfer.files.length; i++) {
+      push(dataTransfer.files.item(i));
     }
   }
 
