@@ -32,7 +32,7 @@ export function getS3Client(): S3Client {
   return client;
 }
 
-/** Keys we issue for reference uploads (S3 presign + Gemini import). */
+/** Keys we issue for browser reference uploads (presigned PUT). */
 export function assertAllowedTempReferenceKey(key: string): void {
   const k = key.trim();
   if (!k.startsWith(TEMP_PREFIX)) {
@@ -45,4 +45,32 @@ export function assertAllowedTempReferenceKey(key: string): void {
 
 export function tempReferenceKey(uniqueId: string, safeFilename: string): string {
   return `${TEMP_PREFIX}refs/${uniqueId}-${safeFilename}`;
+}
+
+function encodeS3KeyForUrlPath(key: string): string {
+  return key
+    .split("/")
+    .filter((s) => s.length > 0)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+}
+
+/**
+ * HTTPS URL Gemini can fetch as `fileData.fileUri` (see Gemini external URL docs).
+ * Set `AWS_S3_PUBLIC_BASE_URL` (no trailing slash) for CloudFront or a custom origin;
+ * otherwise uses virtual-hosted–style `https://{bucket}.s3.{region}.amazonaws.com/...`.
+ * Objects must be world-readable (bucket policy, CDN, etc.) for Gemini to retrieve them.
+ */
+export function getS3PublicObjectUrl(key: string): string {
+  const k = key.trim();
+  if (!k) throw new Error("S3 key is empty.");
+  assertAllowedTempReferenceKey(k);
+  const path = encodeS3KeyForUrlPath(k);
+  const custom = process.env.AWS_S3_PUBLIC_BASE_URL?.trim().replace(/\/+$/, "");
+  if (custom) {
+    return `${custom}/${path}`;
+  }
+  const bucket = getS3Bucket();
+  const region = getS3Region();
+  return `https://${bucket}.s3.${region}.amazonaws.com/${path}`;
 }

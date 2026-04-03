@@ -3,7 +3,12 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { isAllowedEmail } from "@/lib/allowed-emails";
-import { getS3Bucket, getS3Client, tempReferenceKey } from "@/lib/s3-config";
+import {
+  getS3Bucket,
+  getS3Client,
+  getS3PublicObjectUrl,
+  tempReferenceKey,
+} from "@/lib/s3-config";
 
 /** Matches largest model reference cap in lib/models.ts */
 const MAX_ITEMS = 14;
@@ -66,6 +71,7 @@ export async function POST(req: Request) {
     key: string;
     uploadUrl: string;
     contentType: string;
+    publicUrl: string;
   }[] = [];
 
   for (const item of items) {
@@ -118,7 +124,12 @@ export async function POST(req: Request) {
       );
     }
 
-    uploads.push({ key, uploadUrl, contentType });
+    uploads.push({
+      key,
+      uploadUrl,
+      contentType,
+      publicUrl: getS3PublicObjectUrl(key),
+    });
   }
 
   return NextResponse.json({ uploads });

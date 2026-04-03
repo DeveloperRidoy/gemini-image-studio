@@ -4,12 +4,11 @@ export type LocalReferenceImage = {
   id: string;
   preview: string;
   mimeType: string;
-  /** Original file until S3 + Gemini registration completes. */
+  /** Original file until S3 upload completes. */
   sourceFile: File;
   uploadStatus: ReferenceUploadStatus;
-  /** From Gemini Files API once `uploadStatus === "ready"`. */
+  /** Public HTTPS URL of the S3 object; sent to Gemini as `fileData.fileUri`. */
   fileUri?: string;
-  geminiMimeType?: string;
   uploadError?: string;
 };
 

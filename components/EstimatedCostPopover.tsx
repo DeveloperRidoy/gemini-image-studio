@@ -78,7 +78,7 @@ export function EstimatedCostPopover({ cost }: Props) {
     >
       <button
         type="button"
-        className="inline-flex items-center gap-2 rounded-full border border-zinc-200/90 bg-white/90 px-3 py-1.5 text-xs font-semibold text-zinc-800 shadow-sm transition hover:border-emerald-400/50 hover:bg-emerald-50/80 hover:text-emerald-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 dark:border-zinc-600/80 dark:bg-zinc-800/70 dark:text-zinc-100 dark:hover:border-emerald-500/40 dark:hover:bg-emerald-500/10 dark:hover:text-emerald-100"
+        className="inline-flex cursor-pointer items-center gap-2 rounded-full border border-zinc-200/90 bg-white/90 px-3 py-1.5 text-xs font-semibold text-zinc-800 shadow-sm transition hover:border-emerald-400/50 hover:bg-emerald-50/80 hover:text-emerald-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 dark:border-zinc-600/80 dark:bg-zinc-800/70 dark:text-zinc-100 dark:hover:border-emerald-500/40 dark:hover:bg-emerald-500/10 dark:hover:text-emerald-100"
         aria-expanded={visible}
         aria-haspopup="dialog"
         aria-controls={visible ? menuId : undefined}

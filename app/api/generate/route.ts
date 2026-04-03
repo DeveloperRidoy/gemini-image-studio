@@ -25,7 +25,7 @@ type ReferenceImagePayload = {
   data: string;
 };
 
-/** References from the Gemini Files API (`fileData` in generateContent). */
+/** Reference images as HTTPS URLs (`fileData.fileUri`); Gemini fetches the bytes. */
 type ReferenceFileRefPayload = {
   fileUri: string;
   mimeType: string;
@@ -42,7 +42,7 @@ type GenerateBody = {
   personGeneration?: "ALLOW_ALL" | "ALLOW_ADULT" | "ALLOW_NONE";
   temperature?: number;
   seed?: number;
-  /** Small payloads only; prefer referenceFileRefs from Files API uploads. */
+  /** Small payloads only; prefer `referenceFileRefs` (HTTPS URLs to hosted images). */
   referenceImages?: ReferenceImagePayload[];
   referenceFileRefs?: ReferenceFileRefPayload[];
 };

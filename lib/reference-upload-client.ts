@@ -1,13 +1,13 @@
 /**
- * Browser-side: presign → S3 PUT → register with Gemini Files API.
- * Used when adding reference images (not on generate).
+ * Browser-side: presign → S3 PUT → use public HTTPS object URLs in generateContent
+ * (`fileData.fileUri`), per Gemini external URL input.
  */
 
-export type ReferenceGeminiFile = { fileUri: string; mimeType: string };
+export type ReferenceFileUrl = { fileUri: string; mimeType: string };
 
 export async function uploadReferenceFilesViaS3(
   slots: { mimeType: string; sourceFile: File }[],
-): Promise<ReferenceGeminiFile[]> {
+): Promise<ReferenceFileUrl[]> {
   if (slots.length === 0) return [];
 
   const presignRes = await fetch("/api/s3/presign-reference", {
@@ -24,7 +24,12 @@ export async function uploadReferenceFilesViaS3(
   const presignText = await presignRes.text();
   let presignJson: {
     error?: string;
-    uploads?: { key: string; uploadUrl: string; contentType: string }[];
+    uploads?: {
+      key: string;
+      uploadUrl: string;
+      contentType: string;
+      publicUrl: string;
+    }[];
   };
   try {
     presignJson = presignText ? JSON.parse(presignText) : {};
@@ -59,35 +64,8 @@ export async function uploadReferenceFilesViaS3(
     }
   }
 
-  const regRes = await fetch("/api/gemini/reference-files", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      s3Keys: presignJson.uploads.map((x) => x.key),
-    }),
-  });
-  const regText = await regRes.text();
-  let regJson: {
-    error?: string;
-    files?: { fileUri: string; mimeType: string }[];
-  };
-  try {
-    regJson = regText ? JSON.parse(regText) : {};
-  } catch {
-    const preview = regText.slice(0, 80).replace(/\s+/g, " ");
-    throw new Error(
-      `Gemini registration failed (${regRes.status}): ${preview || "non-JSON response"}`,
-    );
-  }
-  if (!regRes.ok || !regJson.files?.length) {
-    throw new Error(
-      regJson.error ??
-        `Register references with Gemini failed (HTTP ${regRes.status}).`,
-    );
-  }
-
-  return regJson.files.map((f) => ({
-    fileUri: f.fileUri,
-    mimeType: f.mimeType || "image/png",
+  return presignJson.uploads.map((u, i) => ({
+    fileUri: u.publicUrl,
+    mimeType: u.contentType || slots[i]?.mimeType || "image/png",
   }));
 }

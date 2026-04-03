@@ -295,14 +295,13 @@ export function ImageStudio() {
               return {
                 ...r,
                 uploadStatus: "error",
-                uploadError: "Missing file in registration response.",
+                uploadError: "Missing file in presign/upload response.",
               };
             }
             return {
               ...r,
               uploadStatus: "ready",
               fileUri: f.fileUri,
-              geminiMimeType: f.mimeType,
               uploadError: undefined,
             };
           }),
@@ -375,7 +374,6 @@ export function ImageStudio() {
       uploadStatus: "pending",
       uploadError: undefined,
       fileUri: undefined,
-      geminiMimeType: undefined,
     };
     setReferenceImages((prev) =>
       prev.map((r) => (r.id === id ? nextSlot : r)),
@@ -490,7 +488,7 @@ export function ImageStudio() {
         referenceImages.length > 0
           ? referenceImages.map((r) => ({
               fileUri: r.fileUri as string,
-              mimeType: r.geminiMimeType ?? r.mimeType,
+              mimeType: r.mimeType,
             }))
           : undefined;
 
@@ -1207,7 +1205,7 @@ export function ImageStudio() {
       />
 
       <div className="relative z-0 flex min-h-0 flex-1 flex-col">
-        <header className="shrink-0 border-b border-zinc-200/80 bg-white/70 px-4 py-4 backdrop-blur-md dark:border-zinc-800/60 dark:bg-zinc-950/60 sm:px-6 sm:py-5">
+        <header className="relative z-30 shrink-0 border-b border-zinc-200/80 bg-white/70 px-4 py-4 backdrop-blur-md dark:border-zinc-800/60 dark:bg-zinc-950/60 sm:px-6 sm:py-5">
           <div className="mx-auto flex max-w-[1600px] flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0 flex-1">
               <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-zinc-200/90 bg-white/80 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-600 shadow-sm dark:border-zinc-700/50 dark:bg-zinc-900/60 dark:text-zinc-400 dark:shadow-none">
