@@ -13,6 +13,7 @@ import { signIn, useSession } from "next-auth/react";
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -70,6 +71,21 @@ function newBatchField(value = ""): BatchPromptField {
       ? crypto.randomUUID()
       : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   return { id, value };
+}
+
+/** Optional header/footer wrap each non-empty batch row for the API. */
+function composeBatchRowPrompt(
+  headerRaw: string,
+  coreTrimmed: string,
+  footerRaw: string,
+): string {
+  const h = headerRaw.trim();
+  const f = footerRaw.trim();
+  const parts: string[] = [];
+  if (h) parts.push(h);
+  if (coreTrimmed) parts.push(coreTrimmed);
+  if (f) parts.push(f);
+  return parts.join("\n\n");
 }
 
 type GenerateJsonBody = {
@@ -168,6 +184,8 @@ export function ImageStudio() {
   const [batchPromptFields, setBatchPromptFields] = useState<
     BatchPromptField[]
   >(() => [newBatchField()]);
+  const [batchHeaderPrompt, setBatchHeaderPrompt] = useState("");
+  const [batchFooterPrompt, setBatchFooterPrompt] = useState("");
   const [aspectRatio, setAspectRatio] = useState<string>("1:1");
   const [imageSize, setImageSize] = useState<ImageSizeKey>("1K");
   const [referenceImages, setReferenceImages] = useState<LocalReferenceImage[]>(
@@ -175,6 +193,9 @@ export function ImageStudio() {
   );
   const referenceImagesRef = useRef<LocalReferenceImage[]>([]);
   referenceImagesRef.current = referenceImages;
+
+  /** After "Add prompt", focus the new textarea (cleared once handled). */
+  const pendingFocusBatchFieldIdRef = useRef<string | null>(null);
 
   const [googleSearch, setGoogleSearch] = useState<GoogleSearchMode>("off");
   const [thinkingLevel, setThinkingLevel] = useState<"minimal" | "high">(
@@ -232,6 +253,20 @@ export function ImageStudio() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [authGateOpen]);
+
+  useLayoutEffect(() => {
+    if (!batchMode) return;
+    const id = pendingFocusBatchFieldIdRef.current;
+    if (!id) return;
+    pendingFocusBatchFieldIdRef.current = null;
+    const el = document.getElementById(
+      `batch-prompt-${id}`,
+    ) as HTMLTextAreaElement | null;
+    if (el) {
+      el.focus();
+      el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [batchMode, batchPromptFields]);
 
   const processReferencesBatch = useCallback(
     async (slots: LocalReferenceImage[]) => {
@@ -365,20 +400,30 @@ export function ImageStudio() {
     });
   }
 
-  const batchValues = useMemo(
-    () => batchPromptFields.map((f) => f.value),
-    [batchPromptFields],
-  );
+  const batchComposedPrompts = useMemo(() => {
+    if (!batchMode) return [];
+    return batchPromptFields
+      .map((f) => {
+        const core = f.value.trim();
+        if (!core) return null;
+        return composeBatchRowPrompt(
+          batchHeaderPrompt,
+          core,
+          batchFooterPrompt,
+        );
+      })
+      .filter((p): p is string => p !== null);
+  }, [batchMode, batchHeaderPrompt, batchFooterPrompt, batchPromptFields]);
 
   const promptsToSend = batchMode
-    ? batchPromptFields.map((f) => f.value.trim()).filter((p) => p.length > 0)
+    ? batchComposedPrompts
     : [prompt.trim()].filter(Boolean);
 
   const cost = useMemo(() => {
     return estimateCost({
       modelId,
       promptText: prompt,
-      batchPrompts: batchMode ? batchValues : undefined,
+      batchPrompts: batchMode ? batchComposedPrompts : undefined,
       batchMode,
       imageSize: effectiveImageSizeForModel(modelId, imageSize),
       referenceImageCount: referenceImages.length,
@@ -389,7 +434,7 @@ export function ImageStudio() {
     modelId,
     prompt,
     batchMode,
-    batchValues,
+    batchComposedPrompts,
     imageSize,
     referenceImages.length,
     thinkingLevel,
@@ -666,21 +711,19 @@ export function ImageStudio() {
 
         {batchMode ? (
           <div className="space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <p className="text-xs leading-relaxed text-zinc-600 dark:text-zinc-500">
-                Each box is one API call. Line breaks inside a box are fine.
-              </p>
-              <button
-                type="button"
-                onClick={() =>
-                  setBatchPromptFields((prev) => [...prev, newBatchField()])
-                }
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-zinc-200/90 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 shadow-sm transition hover:border-emerald-400/50 hover:bg-emerald-50/90 hover:text-emerald-800 dark:border-zinc-600/80 dark:bg-zinc-800/50 dark:text-zinc-200 dark:shadow-none dark:hover:border-emerald-500/40 dark:hover:bg-emerald-500/10 dark:hover:text-emerald-200"
-              >
-                <Plus className="h-3.5 w-3.5" strokeWidth={2} />
-                Add prompt
-              </button>
-            </div>
+            <label className="block">
+              <span className={labelCls}>Batch header (optional)</span>
+              <textarea
+                className={`${fieldCls} min-h-[80px] resize-y`}
+                value={batchHeaderPrompt}
+                onChange={(e) => setBatchHeaderPrompt(e.target.value)}
+                placeholder="Added above each prompt when this field has text…"
+              />
+            </label>
+            <p className="text-xs leading-relaxed text-zinc-600 dark:text-zinc-500">
+              Each box is one API call. Line breaks inside a box are fine.
+              Optional header and footer wrap every non-empty prompt.
+            </p>
             {batchPromptFields.map((field, index) => (
               <div
                 key={field.id}
@@ -707,6 +750,7 @@ export function ImageStudio() {
                   ) : null}
                 </div>
                 <textarea
+                  id={`batch-prompt-${field.id}`}
                   className={`${fieldCls} min-h-[120px] resize-y`}
                   value={field.value}
                   onChange={(e) => {
@@ -721,6 +765,27 @@ export function ImageStudio() {
                 />
               </div>
             ))}
+            <button
+              type="button"
+              onClick={() => {
+                const field = newBatchField();
+                pendingFocusBatchFieldIdRef.current = field.id;
+                setBatchPromptFields((prev) => [...prev, field]);
+              }}
+              className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-zinc-300/90 bg-zinc-50/60 py-3 text-xs font-medium text-zinc-700 transition hover:border-emerald-400/55 hover:bg-emerald-50/50 dark:border-zinc-600/80 dark:bg-zinc-950/40 dark:text-zinc-200 dark:hover:border-emerald-500/40 dark:hover:bg-emerald-500/10 dark:hover:text-emerald-200 sm:w-auto sm:justify-start sm:px-4"
+            >
+              <Plus className="h-3.5 w-3.5" strokeWidth={2} />
+              Add prompt
+            </button>
+            <label className="block">
+              <span className={labelCls}>Batch footer (optional)</span>
+              <textarea
+                className={`${fieldCls} min-h-[80px] resize-y`}
+                value={batchFooterPrompt}
+                onChange={(e) => setBatchFooterPrompt(e.target.value)}
+                placeholder="Added below each prompt when this field has text…"
+              />
+            </label>
           </div>
         ) : (
           <label className="block">
