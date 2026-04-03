@@ -306,21 +306,25 @@ export function ImageStudio() {
     }
     if (!processed.length) return;
 
+    const prevCount = referenceImagesRef.current.length;
     const accepted: LocalReferenceImage[] = [];
-    setReferenceImages((prev) => {
-      const next = [...prev];
-      let i = 0;
-      while (i < processed.length && next.length < maxReferenceImages) {
-        next.push(processed[i]);
-        accepted.push(processed[i]);
-        i++;
-      }
-      for (; i < processed.length; i++) {
-        URL.revokeObjectURL(processed[i].preview);
-      }
-      return next;
+    let i = 0;
+    while (
+      i < processed.length &&
+      prevCount + accepted.length < maxReferenceImages
+    ) {
+      accepted.push(processed[i]);
+      i++;
+    }
+    for (; i < processed.length; i++) {
+      URL.revokeObjectURL(processed[i].preview);
+    }
+    if (!accepted.length) return;
+
+    setReferenceImages((prev) => [...prev, ...accepted]);
+    queueMicrotask(() => {
+      void processReferencesBatch(accepted);
     });
-    if (accepted.length) void processReferencesBatch(accepted);
   }
 
   function retryReferenceUpload(id: string) {
@@ -329,21 +333,21 @@ export function ImageStudio() {
       setAuthGateOpen(true);
       return;
     }
-    let batch: LocalReferenceImage[] = [];
-    setReferenceImages((prev) => {
-      const slot = prev.find((r) => r.id === id);
-      if (!slot || slot.uploadStatus === "ready") return prev;
-      const nextSlot: LocalReferenceImage = {
-        ...slot,
-        uploadStatus: "pending",
-        uploadError: undefined,
-        fileUri: undefined,
-        geminiMimeType: undefined,
-      };
-      batch = [nextSlot];
-      return prev.map((r) => (r.id === id ? nextSlot : r));
+    const slot = referenceImagesRef.current.find((r) => r.id === id);
+    if (!slot || slot.uploadStatus === "ready") return;
+    const nextSlot: LocalReferenceImage = {
+      ...slot,
+      uploadStatus: "pending",
+      uploadError: undefined,
+      fileUri: undefined,
+      geminiMimeType: undefined,
+    };
+    setReferenceImages((prev) =>
+      prev.map((r) => (r.id === id ? nextSlot : r)),
+    );
+    queueMicrotask(() => {
+      void processReferencesBatch([nextSlot]);
     });
-    if (batch.length) queueMicrotask(() => void processReferencesBatch(batch));
   }
 
   function removeReferenceImage(id: string) {
