@@ -1,29 +1,11 @@
 "use client";
 
+import { LogOut, UserRound } from "lucide-react";
 import { signIn, signOut, useSession } from "next-auth/react";
 import { useEffect, useRef, useState } from "react";
 
-function UserOutlineIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-      strokeWidth={1.5}
-      aria-hidden
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z"
-      />
-    </svg>
-  );
-}
-
 const avatarButtonCls =
-  "flex h-9 w-9 items-center justify-center overflow-hidden rounded-full border border-zinc-600/80 bg-zinc-800/80 shadow-md shadow-black/30 ring-2 ring-zinc-950 transition hover:border-emerald-500/40 hover:ring-emerald-500/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/50";
+  "flex h-9 w-9 items-center justify-center overflow-hidden rounded-full border border-zinc-200/90 bg-white shadow-md shadow-zinc-900/10 ring-2 ring-zinc-100 transition hover:border-emerald-400/50 hover:ring-emerald-500/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 dark:border-zinc-600/80 dark:bg-zinc-800/80 dark:shadow-black/30 dark:ring-zinc-950 dark:hover:border-emerald-500/40 dark:hover:ring-emerald-500/20 dark:focus-visible:ring-emerald-400/50";
 
 export function UserMenu() {
   const { data: session, status } = useSession();
@@ -47,11 +29,11 @@ export function UserMenu() {
   if (status === "loading") {
     return (
       <div
-        className={`${avatarButtonCls} shrink-0 cursor-wait text-zinc-500 opacity-60`}
+        className={`${avatarButtonCls} shrink-0 cursor-wait text-zinc-400 opacity-60 dark:text-zinc-500`}
         aria-busy
         aria-label="Loading account"
       >
-        <UserOutlineIcon className="h-5 w-5" />
+        <UserRound className="h-5 w-5" strokeWidth={1.5} />
       </div>
     );
   }
@@ -63,10 +45,10 @@ export function UserMenu() {
         onClick={() => {
           void signIn("google", { callbackUrl });
         }}
-        className={`${avatarButtonCls} shrink-0 text-zinc-400 hover:text-zinc-200`}
+        className={`${avatarButtonCls} shrink-0 text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200`}
         aria-label="Sign in with Google"
       >
-        <UserOutlineIcon className="h-5 w-5" />
+        <UserRound className="h-5 w-5" strokeWidth={1.5} />
       </button>
     );
   }
@@ -83,7 +65,7 @@ export function UserMenu() {
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className={`${avatarButtonCls} text-xs font-semibold text-zinc-200 hover:text-zinc-100`}
+        className={`${avatarButtonCls} text-xs font-semibold text-zinc-700 hover:text-zinc-900 dark:text-zinc-200 dark:hover:text-zinc-100`}
         aria-expanded={open}
         aria-haspopup="menu"
         aria-label="Account menu"
@@ -102,15 +84,15 @@ export function UserMenu() {
       </button>
       {open ? (
         <div
-          className="absolute right-0 top-[calc(100%+0.5rem)] z-50 min-w-[220px] rounded-xl border border-zinc-700/80 bg-zinc-900/95 py-2 shadow-xl shadow-black/50 ring-1 ring-white/[0.06] backdrop-blur-xl"
+          className="absolute right-0 top-[calc(100%+0.5rem)] z-50 min-w-[220px] rounded-xl border border-zinc-200/90 bg-white/95 py-2 shadow-xl shadow-zinc-900/10 ring-1 ring-zinc-200/60 backdrop-blur-xl dark:border-zinc-700/80 dark:bg-zinc-900/95 dark:shadow-black/50 dark:ring-white/[0.06]"
           role="menu"
         >
-          <div className="border-b border-zinc-800/80 px-3 pb-2">
-            <p className="truncate text-xs font-medium text-zinc-200">
+          <div className="border-b border-zinc-200/80 px-3 pb-2 dark:border-zinc-800/80">
+            <p className="truncate text-xs font-medium text-zinc-800 dark:text-zinc-200">
               {user.name || "Signed in"}
             </p>
             {user.email ? (
-              <p className="mt-0.5 truncate text-[11px] text-zinc-500">
+              <p className="mt-0.5 truncate text-[11px] text-zinc-500 dark:text-zinc-500">
                 {user.email}
               </p>
             ) : null}
@@ -122,8 +104,9 @@ export function UserMenu() {
               setOpen(false);
               void signOut({ callbackUrl: "/" });
             }}
-            className="mt-1 w-full px-3 py-2 text-left text-sm text-zinc-300 transition hover:bg-zinc-800/80 hover:text-white"
+            className="mt-1 flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-zinc-600 transition hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800/80 dark:hover:text-white"
           >
+            <LogOut className="h-4 w-4 shrink-0 opacity-70" strokeWidth={1.5} />
             Sign out
           </button>
         </div>

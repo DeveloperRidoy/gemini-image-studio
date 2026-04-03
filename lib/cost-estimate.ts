@@ -65,8 +65,6 @@ export type CostEstimateInput = {
   /** Thinking increases billed tokens; multiplier is a rough guide only. */
   thinkingLevel: "minimal" | "high";
   useGoogleSearch: boolean;
-  /** Apply Batch API 50% discount to token rates (not to search surcharges). */
-  batchApiDiscount: boolean;
 };
 
 export type CostEstimate = {
@@ -74,7 +72,7 @@ export type CostEstimate = {
   estimatedInputTokensPerRequest: number;
   outputImageTokensPerImage: number;
   estimatedOutputTextTokensPerRequest: number;
-  /** Per-request pre-discount USD (excluding uncertain surcharges). */
+  /** Per-request USD (excluding uncertain surcharges). */
   estimatedUsdPerRequest: number;
   /** Total for all requests in the run. */
   estimatedUsdTotal: number;
@@ -88,7 +86,6 @@ export type CostEstimate = {
 
 export function estimateCost(params: CostEstimateInput): CostEstimate {
   const rates = USD_PER_MILLION[params.modelId];
-  const discount = params.batchApiDiscount ? 0.5 : 1;
 
   const batch = params.batchPrompts?.filter((s) => s.trim().length > 0) ?? [];
   const isBatch = params.batchMode === true;
@@ -126,16 +123,13 @@ export function estimateCost(params: CostEstimateInput): CostEstimate {
     : 0;
 
   const inputUsd =
-    (estimatedInputTokensPerRequest / 1_000_000) * rates.input * discount;
+    (estimatedInputTokensPerRequest / 1_000_000) * rates.input;
   const imageUsd =
     (outputImageTokensPerImage / 1_000_000) *
     rates.outputImage *
-    thinkingMultiplier *
-    discount;
+    thinkingMultiplier;
   const textUsd =
-    (estimatedOutputTextTokensPerRequest / 1_000_000) *
-    rates.outputText *
-    discount;
+    (estimatedOutputTextTokensPerRequest / 1_000_000) * rates.outputText;
 
   let estimatedUsdPerRequest = inputUsd + imageUsd + textUsd;
 
@@ -160,15 +154,15 @@ export function estimateCost(params: CostEstimateInput): CostEstimate {
     );
   }
 
-  if (thinkingMultiplier > 1) {
+  if (isBatch && batch.length > 1) {
     notes.push(
-      "High thinking: applied ~12% uplift on image output charge; thinking tokens are billed separately in practice.",
+      "Batch mode runs one interactive generateContent call per prompt (no separate Batch API discount).",
     );
   }
 
-  if (params.batchApiDiscount) {
+  if (thinkingMultiplier > 1) {
     notes.push(
-      "Batch API mode assumes ~50% discount on listed token rates (check current Batch docs).",
+      "High thinking: applied ~12% uplift on image output charge; thinking tokens are billed separately in practice.",
     );
   }
 

@@ -1,5 +1,14 @@
 "use client";
 
+import {
+  AlertTriangle,
+  ChevronDown,
+  Image as ImageIcon,
+  Loader2,
+  LogIn,
+  Plus,
+  Sparkles,
+} from "lucide-react";
 import { signIn, useSession } from "next-auth/react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
@@ -13,8 +22,24 @@ import {
 import {
   estimateCost,
   effectiveImageSizeForModel,
-  USD_TO_CAD_APPROX,
 } from "@/lib/cost-estimate";
+import {
+  appendDailyGeneration,
+  loadDailyUsage,
+  type DailyUsage,
+} from "@/lib/daily-usage-storage";
+import {
+  readFileAsReference,
+  type LocalReferenceImage,
+} from "@/lib/reference-image-files";
+import { DailyUsagePill } from "@/components/DailyUsagePill";
+import { EstimatedCostPopover } from "@/components/EstimatedCostPopover";
+import { ReferenceImagesField } from "@/components/ReferenceImagesField";
+import {
+  GeneratedImageActions,
+  slugFromPrompt,
+} from "@/components/GeneratedImageActions";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { UserMenu } from "@/components/UserMenu";
 
 type GoogleSearchMode = "off" | "web" | "web_image";
@@ -25,6 +50,8 @@ type ApiResult = {
   textParts: string[];
   usage?: Record<string, unknown>;
   error?: string;
+  /** True while this batch row is still waiting on the API */
+  pending?: boolean;
 };
 
 type BatchPromptField = { id: string; value: string };
@@ -37,44 +64,16 @@ function newBatchField(value = ""): BatchPromptField {
   return { id, value };
 }
 
-type LocalReferenceImage = {
-  id: string;
-  preview: string;
-  mimeType: string;
-  data: string;
-};
-
-function readFileAsReference(file: File): Promise<{
-  mimeType: string;
-  data: string;
-  preview: string;
-}> {
-  return new Promise((resolve, reject) => {
-    const preview = URL.createObjectURL(file);
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      const comma = result.indexOf(",");
-      const base64 = comma >= 0 ? result.slice(comma + 1) : result;
-      resolve({
-        mimeType: file.type || "image/png",
-        data: base64,
-        preview,
-      });
-    };
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}
-
 const labelCls =
-  "mb-2 block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500";
+  "mb-2 block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-600 dark:text-zinc-500";
 const fieldCls =
-  "w-full rounded-xl border border-zinc-700/60 bg-zinc-900/60 px-3.5 py-2.5 text-sm text-zinc-100 shadow-inner shadow-black/20 outline-none ring-0 transition placeholder:text-zinc-600 focus:border-emerald-400/45 focus:bg-zinc-900/90 focus:ring-2 focus:ring-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40";
+  "w-full rounded-xl border border-zinc-200/90 bg-white px-3.5 py-2.5 text-sm text-zinc-900 shadow-sm outline-none ring-0 transition placeholder:text-zinc-400 focus:border-emerald-500/50 focus:bg-white focus:ring-2 focus:ring-emerald-500/15 disabled:cursor-not-allowed disabled:opacity-40 dark:border-zinc-700/60 dark:bg-zinc-900/60 dark:text-zinc-100 dark:shadow-inner dark:shadow-black/20 dark:placeholder:text-zinc-600 dark:focus:border-emerald-400/45 dark:focus:bg-zinc-900/90 dark:focus:ring-emerald-500/20";
 const panelCls =
-  "rounded-2xl border border-zinc-800/80 bg-zinc-900/40 p-5 shadow-[0_1px_0_0_rgba(255,255,255,0.04)_inset,0_20px_50px_-24px_rgba(0,0,0,0.5)] backdrop-blur-xl";
+  "rounded-2xl border border-zinc-200/80 bg-white/75 p-5 shadow-sm shadow-zinc-900/5 backdrop-blur-xl dark:border-zinc-800/80 dark:bg-zinc-900/40 dark:shadow-[0_1px_0_0_rgba(255,255,255,0.04)_inset,0_20px_50px_-24px_rgba(0,0,0,0.5)]";
 const sectionTitleCls =
-  "mb-4 flex items-center gap-2 text-[13px] font-semibold tracking-tight text-zinc-100";
+  "mb-4 flex items-center gap-2 text-[13px] font-semibold tracking-tight text-zinc-900 dark:text-zinc-100";
+const checkboxCls =
+  "h-4 w-4 rounded border-zinc-300 bg-white text-emerald-600 focus:ring-2 focus:ring-emerald-500/25 dark:border-zinc-600 dark:bg-zinc-900 dark:text-emerald-500 dark:focus:ring-emerald-500/30";
 
 const XL_MEDIA = "(min-width: 1280px)";
 
@@ -87,7 +86,7 @@ function SectionTitle({
 }) {
   return (
     <h2 className={sectionTitleCls}>
-      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-emerald-500/15 text-[10px] font-bold text-emerald-400 ring-1 ring-emerald-500/25">
+      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-emerald-500/15 text-[10px] font-bold text-emerald-700 ring-1 ring-emerald-500/30 dark:text-emerald-400 dark:ring-emerald-500/25">
         {step}
       </span>
       {children}
@@ -133,12 +132,16 @@ export function ImageStudio() {
   const [personGeneration, setPersonGeneration] = useState<string>("");
   const [temperature, setTemperature] = useState<string>("");
   const [seed, setSeed] = useState<string>("");
-  const [batchApiDiscount, setBatchApiDiscount] = useState(false);
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<ApiResult[] | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
   const [authGateOpen, setAuthGateOpen] = useState(false);
+  const [dailyUsage, setDailyUsage] = useState<DailyUsage | null>(null);
   const isXl = useMediaQuery(XL_MEDIA);
+
+  useEffect(() => {
+    setDailyUsage(loadDailyUsage());
+  }, []);
 
   const def = getModelDef(modelId);
   const aspectOptions = aspectRatiosForModel(modelId);
@@ -179,19 +182,20 @@ export function ImageStudio() {
     return () => window.removeEventListener("keydown", onKey);
   }, [authGateOpen]);
 
-  async function addReferenceFiles(fileList: FileList | null) {
-    if (!fileList?.length) return;
-    const added: LocalReferenceImage[] = [];
-    for (const file of Array.from(fileList)) {
-      if (!file.type.startsWith("image/")) continue;
-      if (referenceImages.length + added.length >= maxReferenceImages) break;
+  async function addReferenceFiles(source: FileList | File[] | null) {
+    if (!source?.length) return;
+    const candidates = Array.from(source).filter((f) =>
+      f.type.startsWith("image/"),
+    );
+    const processed: LocalReferenceImage[] = [];
+    for (const file of candidates) {
       try {
         const { mimeType, data, preview } = await readFileAsReference(file);
-        added.push({
+        processed.push({
           id:
             typeof crypto !== "undefined" && "randomUUID" in crypto
               ? crypto.randomUUID()
-              : `${Date.now()}-${Math.random()}`,
+              : `${Date.now()}-${Math.random()}-${processed.length}`,
           mimeType,
           data,
           preview,
@@ -200,10 +204,19 @@ export function ImageStudio() {
         /* skip unreadable file */
       }
     }
-    if (!added.length) return;
-    setReferenceImages((prev) =>
-      [...prev, ...added].slice(0, maxReferenceImages),
-    );
+    if (!processed.length) return;
+    setReferenceImages((prev) => {
+      const next = [...prev];
+      let i = 0;
+      while (i < processed.length && next.length < maxReferenceImages) {
+        next.push(processed[i]);
+        i++;
+      }
+      for (; i < processed.length; i++) {
+        URL.revokeObjectURL(processed[i].preview);
+      }
+      return next;
+    });
   }
 
   function removeReferenceImage(id: string) {
@@ -240,7 +253,6 @@ export function ImageStudio() {
       referenceImageCount: referenceImages.length,
       thinkingLevel,
       useGoogleSearch: googleSearch !== "off",
-      batchApiDiscount,
     });
   }, [
     modelId,
@@ -251,7 +263,6 @@ export function ImageStudio() {
     referenceImages.length,
     thinkingLevel,
     googleSearch,
-    batchApiDiscount,
   ]);
 
   async function onGenerate() {
@@ -277,37 +288,140 @@ export function ImageStudio() {
 
     setLoading(true);
     try {
-      const res = await fetch("/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          modelId,
-          prompts: promptsToSend,
-          aspectRatio,
-          imageSize: def.supportsImageSize
-            ? effectiveImageSizeForModel(modelId, imageSize)
-            : undefined,
-          googleSearch,
-          thinkingLevel,
-          includeThoughts,
-          personGeneration: personGeneration || undefined,
-          temperature: temperature === "" ? undefined : Number(temperature),
-          seed: seed === "" ? undefined : Number(seed),
-          referenceImages:
-            referenceImages.length > 0
-              ? referenceImages.map((r) => ({
-                  mimeType: r.mimeType,
-                  data: r.data,
-                }))
-              : undefined,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setLastError(data.error ?? res.statusText);
-        return;
+      const referencePayload =
+        referenceImages.length > 0
+          ? referenceImages.map((r) => ({
+              mimeType: r.mimeType,
+              data: r.data,
+            }))
+          : undefined;
+
+      const requestPayloadBase = {
+        modelId,
+        aspectRatio,
+        imageSize: def.supportsImageSize
+          ? effectiveImageSizeForModel(modelId, imageSize)
+          : undefined,
+        googleSearch,
+        thinkingLevel,
+        includeThoughts,
+        personGeneration: personGeneration || undefined,
+        temperature: temperature === "" ? undefined : Number(temperature),
+        seed: seed === "" ? undefined : Number(seed),
+        referenceImages: referencePayload,
+      };
+
+      const promptsQueue = batchMode
+        ? promptsToSend
+        : [promptsToSend[0] ?? ""].filter(Boolean);
+
+      if (batchMode && promptsQueue.length > 0) {
+        setResults(
+          promptsQueue.map((p) => ({
+            prompt: p,
+            images: [],
+            textParts: [],
+            pending: true,
+          })),
+        );
       }
-      setResults(data.results as ApiResult[]);
+
+      const completedForBilling: ApiResult[] = [];
+
+      for (let i = 0; i < promptsQueue.length; i++) {
+        const p = promptsQueue[i];
+        const res = await fetch("/api/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...requestPayloadBase,
+            prompts: [p],
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setLastError(data.error ?? res.statusText);
+          if (batchMode) {
+            setResults((prev) => {
+              if (!prev || prev.length !== promptsQueue.length) return prev;
+              const next = [...prev];
+              next[i] = {
+                prompt: p,
+                images: [],
+                textParts: [],
+                error: data.error ?? res.statusText,
+                pending: false,
+              };
+              return next;
+            });
+          }
+          const imageCount = completedForBilling.reduce(
+            (acc, r) => acc + (r.error ? 0 : r.images.length),
+            0,
+          );
+          if (imageCount > 0 && promptsQueue.length > 0) {
+            const promptsWithImages = completedForBilling.filter(
+              (r) => r.images.length > 0,
+            ).length;
+            const cadToAdd =
+              (cost.estimatedCadTotal / promptsQueue.length) *
+              promptsWithImages;
+            setDailyUsage(appendDailyGeneration(imageCount, cadToAdd));
+          }
+          return;
+        }
+        const raw = (data.results as ApiResult[])[0];
+        const row: ApiResult = raw
+          ? { ...raw, pending: false }
+          : {
+              prompt: p,
+              images: [],
+              textParts: [],
+              error: "Empty response",
+              pending: false,
+            };
+        completedForBilling.push(row);
+
+        if (batchMode) {
+          setResults((prev) => {
+            if (!prev || prev.length !== promptsQueue.length) {
+              return prev;
+            }
+            const next = [...prev];
+            next[i] = row;
+            return next;
+          });
+        } else {
+          setResults([row]);
+        }
+      }
+
+      if (batchMode) {
+        const imageCount = completedForBilling.reduce(
+          (acc, r) => acc + (r.error ? 0 : r.images.length),
+          0,
+        );
+        if (imageCount > 0 && promptsQueue.length > 0) {
+          const promptsWithImages = completedForBilling.filter(
+            (r) => r.images.length > 0,
+          ).length;
+          const cadToAdd =
+            (cost.estimatedCadTotal / promptsQueue.length) * promptsWithImages;
+          setDailyUsage(appendDailyGeneration(imageCount, cadToAdd));
+        }
+      } else {
+        const row = completedForBilling[0];
+        const imageCount = row
+          ? row.error
+            ? 0
+            : row.images.length
+          : 0;
+        if (imageCount > 0) {
+          setDailyUsage(
+            appendDailyGeneration(imageCount, cost.estimatedCadTotal),
+          );
+        }
+      }
     } catch (e) {
       setLastError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -345,8 +459,8 @@ export function ImageStudio() {
           </select>
         </label>
 
-        <div className="mb-5 flex flex-wrap items-center gap-3 rounded-xl border border-zinc-800/80 bg-zinc-950/40 px-4 py-3">
-          <label className="flex cursor-pointer items-center gap-3 text-sm text-zinc-300">
+        <div className="mb-5 flex flex-wrap items-center gap-3 rounded-xl border border-zinc-200/80 bg-zinc-50/80 px-4 py-3 dark:border-zinc-800/80 dark:bg-zinc-950/40">
+          <label className="flex cursor-pointer items-center gap-3 text-sm text-zinc-700 dark:text-zinc-300">
             <input
               type="checkbox"
               checked={batchMode}
@@ -362,7 +476,7 @@ export function ImageStudio() {
                 }
                 setBatchMode(on);
               }}
-              className="h-4 w-4 rounded border-zinc-600 bg-zinc-900 text-emerald-500 focus:ring-2 focus:ring-emerald-500/30"
+              className={checkboxCls}
             />
             <span>Batch mode — one text box per image request</span>
           </label>
@@ -371,7 +485,7 @@ export function ImageStudio() {
         {batchMode ? (
           <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <p className="text-xs leading-relaxed text-zinc-500">
+              <p className="text-xs leading-relaxed text-zinc-600 dark:text-zinc-500">
                 Each box is one API call. Line breaks inside a box are fine.
               </p>
               <button
@@ -379,18 +493,19 @@ export function ImageStudio() {
                 onClick={() =>
                   setBatchPromptFields((prev) => [...prev, newBatchField()])
                 }
-                className="shrink-0 rounded-lg border border-zinc-600/80 bg-zinc-800/50 px-3 py-1.5 text-xs font-medium text-zinc-200 transition hover:border-emerald-500/40 hover:bg-emerald-500/10 hover:text-emerald-200"
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-zinc-200/90 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 shadow-sm transition hover:border-emerald-400/50 hover:bg-emerald-50/90 hover:text-emerald-800 dark:border-zinc-600/80 dark:bg-zinc-800/50 dark:text-zinc-200 dark:shadow-none dark:hover:border-emerald-500/40 dark:hover:bg-emerald-500/10 dark:hover:text-emerald-200"
               >
-                + Add prompt
+                <Plus className="h-3.5 w-3.5" strokeWidth={2} />
+                Add prompt
               </button>
             </div>
             {batchPromptFields.map((field, index) => (
               <div
                 key={field.id}
-                className="rounded-xl border border-zinc-800/90 bg-black/25 p-4 ring-1 ring-white/[0.03]"
+                className="rounded-xl border border-zinc-200/90 bg-zinc-50/80 p-4 ring-1 ring-zinc-200/40 dark:border-zinc-800/90 dark:bg-black/25 dark:ring-white/[0.03]"
               >
                 <div className="mb-2 flex items-center justify-between gap-2">
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-600 dark:text-zinc-500">
                     Prompt {index + 1}
                   </span>
                   {batchPromptFields.length > 1 ? (
@@ -403,7 +518,7 @@ export function ImageStudio() {
                             : prev.filter((f) => f.id !== field.id),
                         )
                       }
-                      className="text-[11px] font-medium text-red-400/90 transition hover:text-red-300"
+                      className="text-[11px] font-medium text-red-600 transition hover:text-red-700 dark:text-red-400/90 dark:hover:text-red-300"
                     >
                       Remove
                     </button>
@@ -437,85 +552,23 @@ export function ImageStudio() {
           </label>
         )}
 
-        <div className="mt-6 border-t border-zinc-800/80 pt-6">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
-              Reference images (optional)
-            </span>
-            {referenceImages.length > 0 ? (
-              <button
-                type="button"
-                onClick={clearReferenceImages}
-                className="text-[11px] font-medium text-zinc-500 hover:text-zinc-300"
-              >
-                Clear all
-              </button>
-            ) : null}
-          </div>
-          <p className="mb-3 text-xs leading-relaxed text-zinc-500">
-            Upload images to edit, compose, or use as style references. Response
-            modalities are set automatically (image-only for text-only prompts;
-            text+image when references are present). Up to {maxReferenceImages}{" "}
-            images for this model.
-            {batchMode
-              ? " In batch mode, the same references are sent with every prompt."
-              : ""}
-          </p>
-          <input
-            type="file"
-            accept="image/*"
-            multiple
-            className="hidden"
-            id="ref-images-input"
-            onChange={(e) => {
-              void addReferenceFiles(e.target.files);
-              e.target.value = "";
-            }}
-          />
-          <label
-            htmlFor="ref-images-input"
-            className="flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-zinc-600/80 bg-zinc-950/40 px-4 py-8 text-center transition hover:border-emerald-500/40 hover:bg-emerald-500/5"
-          >
-            <span className="text-sm text-zinc-300">
-              Click to upload or drop images
-            </span>
-            <span className="mt-1 text-[11px] text-zinc-600">
-              PNG, JPEG, WebP… · {referenceImages.length}/{maxReferenceImages}
-            </span>
-          </label>
-          {referenceImages.length > 0 ? (
-            <div className="mt-4 grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5">
-              {referenceImages.map((r) => (
-                <div
-                  key={r.id}
-                  className="group relative aspect-square overflow-hidden rounded-lg border border-zinc-700/80 bg-zinc-900"
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={r.preview}
-                    alt=""
-                    className="h-full w-full object-cover"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => removeReferenceImage(r.id)}
-                    className="absolute right-1 top-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-medium text-white opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100"
-                    aria-label="Remove image"
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))}
-            </div>
-          ) : null}
-        </div>
+        <ReferenceImagesField
+          batchMode={batchMode}
+          maxReferenceImages={maxReferenceImages}
+          images={referenceImages}
+          onAddFiles={addReferenceFiles}
+          onRemove={removeReferenceImage}
+          onClearAll={clearReferenceImages}
+        />
       </section>
 
       {/* Output settings */}
       <section className={panelCls}>
         <SectionTitle step="2">Output</SectionTitle>
-        <p className="mb-4 rounded-lg border border-zinc-800/80 bg-black/20 px-3 py-2 text-xs text-zinc-400">
-          <span className="font-medium text-zinc-300">Response type: </span>
+        <p className="mb-4 rounded-lg border border-zinc-200/80 bg-zinc-50/90 px-3 py-2 text-xs text-zinc-600 dark:border-zinc-800/80 dark:bg-black/20 dark:text-zinc-400">
+          <span className="font-medium text-zinc-800 dark:text-zinc-300">
+            Response type:{" "}
+          </span>
           {referenceImages.length > 0
             ? "TEXT + IMAGE (reference images attached — model may include short text)."
             : "IMAGE-focused output for text-only prompts."}
@@ -553,7 +606,7 @@ export function ImageStudio() {
                 ))}
               </select>
             ) : (
-              <div className="rounded-xl border border-zinc-800/80 bg-zinc-950/50 px-3.5 py-2.5 text-xs leading-relaxed text-zinc-500">
+              <div className="rounded-xl border border-zinc-200/80 bg-zinc-50/90 px-3.5 py-2.5 text-xs leading-relaxed text-zinc-600 dark:border-zinc-800/80 dark:bg-zinc-950/50 dark:text-zinc-500">
                 Fixed ~1024px (1K tier). This model does not expose 2K/4K like
                 Gemini 3 image models.
               </div>
@@ -583,17 +636,20 @@ export function ImageStudio() {
       </section>
 
       {/* Advanced — collapsed by default */}
-      <details className={panelCls}>
-        <summary className="flex cursor-pointer list-none items-center justify-between gap-2 text-[13px] font-semibold tracking-tight text-zinc-200 [&::-webkit-details-marker]:hidden">
+      <details className={`${panelCls} group`}>
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-2 text-[13px] font-semibold tracking-tight text-zinc-800 dark:text-zinc-200 [&::-webkit-details-marker]:hidden">
           <span className="flex items-center gap-2">
-            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-zinc-700/50 text-[10px] font-bold text-zinc-400 ring-1 ring-zinc-600/50">
+            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-zinc-200/80 text-[10px] font-bold text-zinc-600 ring-1 ring-zinc-300/80 dark:bg-zinc-700/50 dark:text-zinc-400 dark:ring-zinc-600/50">
               3
             </span>
             Advanced options
           </span>
-          <span className="text-zinc-500">▼</span>
+          <ChevronDown
+            className="h-4 w-4 shrink-0 text-zinc-500 transition-transform duration-200 group-open:rotate-180"
+            strokeWidth={2}
+          />
         </summary>
-        <div className="mt-5 border-t border-zinc-800/80 pt-5">
+        <div className="mt-5 border-t border-zinc-200/80 pt-5 dark:border-zinc-800/80">
           {def.supportsThinking ? (
             <div className="mb-5 grid gap-5 sm:grid-cols-2">
               <label className="block">
@@ -614,9 +670,9 @@ export function ImageStudio() {
                   type="checkbox"
                   checked={includeThoughts}
                   onChange={(e) => setIncludeThoughts(e.target.checked)}
-                  className="h-4 w-4 rounded border-zinc-600 bg-zinc-900 text-emerald-500 focus:ring-2 focus:ring-emerald-500/30"
+                  className={checkboxCls}
                 />
-                <span className="text-sm text-zinc-400">
+                <span className="text-sm text-zinc-600 dark:text-zinc-400">
                   Include thought parts in response (still billed)
                 </span>
               </label>
@@ -644,7 +700,7 @@ export function ImageStudio() {
                 step="0.1"
                 min="0"
                 max="2"
-                placeholder="—"
+                placeholder=""
                 className={fieldCls}
                 value={temperature}
                 onChange={(e) => setTemperature(e.target.value)}
@@ -654,7 +710,7 @@ export function ImageStudio() {
               <span className={labelCls}>Seed</span>
               <input
                 type="number"
-                placeholder="—"
+                placeholder=""
                 className={fieldCls}
                 value={seed}
                 onChange={(e) => setSeed(e.target.value)}
@@ -666,135 +722,73 @@ export function ImageStudio() {
     </>
   );
 
-  const estimatedCostCard = (
-    <div
-      className={`${panelCls} border-emerald-500/25 bg-gradient-to-b from-emerald-950/30 via-zinc-900/35 to-zinc-950/50 ring-1 ring-emerald-500/10`}
-    >
-      <div className="mb-2 flex items-center gap-2">
-        <span
-          className="grid h-8 w-8 place-items-center rounded-lg bg-emerald-500/10 text-sm text-emerald-400 ring-1 ring-emerald-500/20"
-          aria-hidden
-        >
-          ◈
-        </span>
-        <div>
-          <h2 className="text-sm font-semibold tracking-tight text-zinc-100">
-            Estimated cost
-          </h2>
-          <p className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">
-            Indicative only
-          </p>
-        </div>
-      </div>
-      <p className="text-xs leading-relaxed text-zinc-500">
-        Not a bill. Amounts are approximate{" "}
-        <span className="text-zinc-400">CAD</span> (USD rates ×{" "}
-        {USD_TO_CAD_APPROX}
-        ). Google bills in USD — verify on{" "}
-        <a
-          className="text-emerald-400/90 underline decoration-emerald-500/25 underline-offset-2 hover:text-emerald-300"
-          href="https://ai.google.dev/gemini-api/docs/pricing"
-          target="_blank"
-          rel="noreferrer"
-        >
-          pricing
-        </a>
-        .
-      </p>
-      <dl className="mt-5 space-y-3 text-sm">
-        <div className="flex justify-between gap-3 border-b border-zinc-800/60 pb-2">
-          <dt className="text-zinc-500">Est. modalities</dt>
-          <dd className="text-right text-xs text-zinc-300">
-            {cost.usesTextAndImageModality ? "TEXT + IMAGE" : "IMAGE"}
-          </dd>
-        </div>
-        <div className="flex justify-between gap-3 border-b border-zinc-800/60 pb-2">
-          <dt className="text-zinc-500">API calls</dt>
-          <dd className="font-mono text-zinc-200">{cost.requestCount}</dd>
-        </div>
-        <div className="flex justify-between gap-3 border-b border-zinc-800/60 pb-2">
-          <dt className="text-zinc-500">Input tok / call</dt>
-          <dd className="font-mono text-zinc-200">
-            {cost.estimatedInputTokensPerRequest}
-          </dd>
-        </div>
-        <div className="flex justify-between gap-3 border-b border-zinc-800/60 pb-2">
-          <dt className="text-zinc-500">Image out tok / image</dt>
-          <dd className="font-mono text-zinc-200">
-            {cost.outputImageTokensPerImage}
-          </dd>
-        </div>
-        <div className="flex justify-between gap-3 border-b border-zinc-800/60 pb-2">
-          <dt className="text-zinc-500">~CAD / call</dt>
-          <dd className="font-mono tabular-nums text-emerald-400/95">
-            CA${cost.estimatedCadPerRequest.toFixed(4)}
-          </dd>
-        </div>
-        <div className="flex justify-between gap-3 pt-1 font-medium">
-          <dt className="text-zinc-300">~Total CAD</dt>
-          <dd className="font-mono text-lg tabular-nums text-emerald-300">
-            CA${cost.estimatedCadTotal.toFixed(4)}
-          </dd>
-        </div>
-      </dl>
-      <label className="mt-5 flex cursor-pointer items-start gap-2.5 rounded-lg border border-zinc-800/60 bg-black/25 p-3 text-xs text-zinc-400 transition hover:border-zinc-700/80">
-        <input
-          type="checkbox"
-          checked={batchApiDiscount}
-          onChange={(e) => setBatchApiDiscount(e.target.checked)}
-          className="mt-0.5 h-4 w-4 rounded border-zinc-600 bg-zinc-900 text-emerald-500"
-        />
-        <span>Assume Batch API ~50% token discount</span>
-      </label>
-      <ul className="mt-4 space-y-2 border-t border-zinc-800/60 pt-4 text-[11px] leading-relaxed text-zinc-500">
-        {cost.notes.map((n) => (
-          <li key={n} className="flex gap-2">
-            <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-zinc-600" />
-            <span>{n}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-
   const resultsSection =
     results && results.length > 0 ? (
       <section className="space-y-5">
         {results.map((r, i) => (
           <article
-            key={`${i}-${r.prompt.slice(0, 32)}`}
-            className="overflow-hidden rounded-2xl border border-zinc-800/80 bg-zinc-900/35 shadow-xl shadow-black/40 ring-1 ring-white/[0.04]"
+            key={`result-${i}`}
+            className="overflow-hidden rounded-2xl border border-zinc-200/85 bg-white/80 shadow-lg shadow-zinc-900/10 ring-1 ring-zinc-200/50 dark:border-zinc-800/80 dark:bg-zinc-900/35 dark:shadow-xl dark:shadow-black/40 dark:ring-white/[0.04]"
           >
-            <div className="border-b border-zinc-800/80 bg-zinc-950/60 px-4 py-3">
-              <p className="line-clamp-4 font-mono text-[11px] leading-relaxed text-zinc-500">
+            <div className="border-b border-zinc-200/80 bg-zinc-50/90 px-4 py-3 dark:border-zinc-800/80 dark:bg-zinc-950/60">
+              <p className="line-clamp-4 font-mono text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-500">
                 {r.prompt}
               </p>
             </div>
             <div className="p-4">
-              {r.error ? (
-                <p className="text-sm text-red-400">{r.error}</p>
-              ) : null}
-              {r.textParts.length > 0 ? (
-                <div className="mb-4 whitespace-pre-wrap text-sm text-zinc-300">
-                  {r.textParts.join("\n")}
-                </div>
-              ) : null}
-              <div className="flex flex-wrap gap-4">
-                {r.images.map((src, j) => (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    key={j}
-                    src={src}
-                    alt=""
-                    className="max-h-[min(28rem,70vh)] w-auto rounded-xl border border-zinc-700/50 shadow-2xl shadow-black/50 ring-1 ring-white/5"
+              {r.pending ? (
+                <div
+                  className="flex min-h-[min(12rem,40vh)] flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-zinc-300/80 bg-zinc-50/80 py-10 dark:border-zinc-700/70 dark:bg-zinc-950/50"
+                  aria-busy
+                  aria-label="Generating image for this prompt"
+                >
+                  <Loader2
+                    className="h-9 w-9 animate-spin text-emerald-600 dark:text-emerald-400"
+                    strokeWidth={1.75}
+                    aria-hidden
                   />
-                ))}
-              </div>
-              {r.usage ? (
-                <pre className="mt-4 overflow-x-auto rounded-lg border border-zinc-800/80 bg-black/40 p-3 font-mono text-[11px] text-zinc-500">
-                  {JSON.stringify(r.usage, null, 2)}
-                </pre>
-              ) : null}
+                  <p className="text-sm font-medium text-zinc-600 dark:text-zinc-400">
+                    Generating…
+                  </p>
+                </div>
+              ) : (
+                <>
+                  {r.error ? (
+                    <p className="text-sm text-red-600 dark:text-red-400">
+                      {r.error}
+                    </p>
+                  ) : null}
+                  {r.textParts.length > 0 ? (
+                    <div className="mb-4 whitespace-pre-wrap text-sm text-zinc-800 dark:text-zinc-300">
+                      {r.textParts.join("\n")}
+                    </div>
+                  ) : null}
+                  <div className="flex flex-wrap items-start justify-center gap-6">
+                    {r.images.map((src, j) => (
+                      <figure
+                        key={j}
+                        className="m-0 flex min-w-0 max-w-full flex-col items-center gap-2.5"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={src}
+                          alt=""
+                          className="h-auto max-h-[min(28rem,70vh)] w-auto max-w-full object-contain rounded-xl border border-zinc-200/90 shadow-lg shadow-zinc-900/15 ring-1 ring-zinc-200/40 dark:border-zinc-700/50 dark:shadow-2xl dark:shadow-black/50 dark:ring-white/5"
+                        />
+                        <GeneratedImageActions
+                          dataUrl={src}
+                          filenameBase={`gemini-${i + 1}-img-${j + 1}-${slugFromPrompt(r.prompt)}`}
+                        />
+                      </figure>
+                    ))}
+                  </div>
+                  {r.usage ? (
+                    <pre className="mt-4 overflow-x-auto rounded-lg border border-zinc-200/80 bg-zinc-50 p-3 font-mono text-[11px] text-zinc-600 dark:border-zinc-800/80 dark:bg-black/40 dark:text-zinc-500">
+                      {JSON.stringify(r.usage, null, 2)}
+                    </pre>
+                  ) : null}
+                </>
+              )}
             </div>
           </article>
         ))}
@@ -802,25 +796,18 @@ export function ImageStudio() {
     ) : null;
 
   const emptyOutput = (
-    <div className="flex min-h-[200px] flex-col items-center justify-center rounded-2xl border border-dashed border-zinc-800/90 bg-zinc-950/40 px-6 py-12 text-center">
-      <div className="mb-3 grid h-14 w-14 place-items-center rounded-2xl bg-zinc-900/80 ring-1 ring-zinc-700/60">
-        <svg
-          className="h-7 w-7 text-zinc-600"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
+    <div className="flex min-h-[200px] flex-col items-center justify-center rounded-2xl border border-dashed border-zinc-300/90 bg-zinc-50/70 px-6 py-12 text-center dark:border-zinc-800/90 dark:bg-zinc-950/40">
+      <div className="mb-3 grid h-14 w-14 place-items-center rounded-2xl bg-zinc-100 ring-1 ring-zinc-200/90 dark:bg-zinc-900/80 dark:ring-zinc-700/60">
+        <ImageIcon
+          className="h-7 w-7 text-zinc-400 dark:text-zinc-600"
           strokeWidth={1.25}
           aria-hidden
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
-          />
-        </svg>
+        />
       </div>
-      <p className="text-sm font-medium text-zinc-400">No output yet</p>
-      <p className="mt-1 max-w-xs text-xs leading-relaxed text-zinc-600">
+      <p className="text-sm font-medium text-zinc-600 dark:text-zinc-400">
+        No output yet
+      </p>
+      <p className="mt-1 max-w-xs text-xs leading-relaxed text-zinc-500 dark:text-zinc-600">
         Generated images and any text from the model will show here.
       </p>
     </div>
@@ -831,35 +818,17 @@ export function ImageStudio() {
       type="button"
       onClick={onGenerate}
       disabled={loading}
-      className="group relative flex w-full items-center justify-center gap-2 overflow-hidden rounded-xl bg-gradient-to-r from-emerald-500 via-emerald-600 to-teal-600 px-5 py-3.5 text-sm font-semibold text-white shadow-lg shadow-emerald-950/40 transition hover:from-emerald-400 hover:via-emerald-500 hover:to-teal-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/50 disabled:cursor-not-allowed disabled:opacity-45"
+      className="group relative flex w-full items-center justify-center gap-2 overflow-hidden rounded-xl bg-gradient-to-r from-emerald-500 via-emerald-600 to-teal-600 px-5 py-3.5 text-sm font-semibold text-white shadow-lg shadow-emerald-900/25 transition hover:from-emerald-400 hover:via-emerald-500 hover:to-teal-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 disabled:cursor-not-allowed disabled:opacity-45 dark:shadow-emerald-950/40 dark:focus-visible:ring-emerald-400/50"
     >
       {loading ? (
         <>
-          <svg
-            className="h-4 w-4 animate-spin"
-            viewBox="0 0 24 24"
-            fill="none"
-            aria-hidden
-          >
-            <circle
-              className="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              strokeWidth="4"
-            />
-            <path
-              className="opacity-90"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-            />
-          </svg>
+          <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} aria-hidden />
           Generating…
         </>
       ) : (
         <>
           <span className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/15 to-white/0 opacity-0 transition group-hover:opacity-100" />
+          <Sparkles className="h-4 w-4 shrink-0 opacity-95" strokeWidth={2} />
           Generate images
         </>
       )}
@@ -869,39 +838,30 @@ export function ImageStudio() {
   const errorBanner = lastError ? (
     <div
       role="alert"
-      className="mb-3 flex gap-3 rounded-xl border border-red-500/35 bg-red-950/50 px-4 py-3 text-sm text-red-100 shadow-lg shadow-red-950/30 backdrop-blur-sm ring-1 ring-red-500/20"
+      className="mb-3 flex gap-3 rounded-xl border border-red-200/90 bg-red-50 px-4 py-3 text-sm text-red-900 shadow-md shadow-red-900/10 backdrop-blur-sm ring-1 ring-red-200/60 dark:border-red-500/35 dark:bg-red-950/50 dark:text-red-100 dark:shadow-lg dark:shadow-red-950/30 dark:ring-red-500/20"
     >
-      <svg
-        className="mt-0.5 h-5 w-5 shrink-0 text-red-400"
-        fill="none"
-        viewBox="0 0 24 24"
-        stroke="currentColor"
+      <AlertTriangle
+        className="mt-0.5 h-5 w-5 shrink-0 text-red-600 dark:text-red-400"
         strokeWidth={2}
         aria-hidden
-      >
-        <path
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-        />
-      </svg>
+      />
       <p className="min-w-0 flex-1 leading-relaxed">{lastError}</p>
     </div>
   ) : null;
 
   const actionFooter = (
-    <div className="border-t border-zinc-800/80 bg-zinc-950/90 px-4 py-4 shadow-[0_-12px_40px_-16px_rgba(0,0,0,0.6)] backdrop-blur-xl supports-[backdrop-filter]:bg-zinc-950/75 sm:px-5">
+    <div className="border-t border-zinc-200/85 bg-white/90 px-4 py-4 shadow-[0_-8px_32px_-12px_rgba(0,0,0,0.08)] backdrop-blur-xl supports-[backdrop-filter]:bg-white/80 dark:border-zinc-800/80 dark:bg-zinc-950/90 dark:shadow-[0_-12px_40px_-16px_rgba(0,0,0,0.6)] dark:supports-[backdrop-filter]:bg-zinc-950/75 sm:px-5">
       {errorBanner}
       {generateButton}
     </div>
   );
 
   const outputColumnHeader = (
-    <div className="shrink-0 border-b border-zinc-800/70 bg-zinc-950/40 px-4 py-3 sm:px-5">
-      <h2 className="text-sm font-semibold tracking-tight text-zinc-100">
+    <div className="shrink-0 border-b border-zinc-200/80 bg-zinc-50/70 px-4 py-3 dark:border-zinc-800/70 dark:bg-zinc-950/40 sm:px-5">
+      <h2 className="text-sm font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
         Output
       </h2>
-      <p className="mt-0.5 text-[11px] text-zinc-500">
+      <p className="mt-0.5 text-[11px] text-zinc-600 dark:text-zinc-500">
         Previews and response metadata
       </p>
     </div>
@@ -915,7 +875,7 @@ export function ImageStudio() {
       >
         <button
           type="button"
-          className="absolute inset-0 bg-zinc-950/70 backdrop-blur-sm transition hover:bg-zinc-950/75"
+          className="absolute inset-0 bg-zinc-900/40 backdrop-blur-sm transition hover:bg-zinc-900/45 dark:bg-zinc-950/70 dark:hover:bg-zinc-950/75"
           aria-label="Close sign-in prompt"
           onClick={() => setAuthGateOpen(false)}
         />
@@ -923,31 +883,22 @@ export function ImageStudio() {
           role="dialog"
           aria-modal
           aria-labelledby="auth-gate-title"
-          className="relative z-10 w-full max-w-md rounded-2xl border border-zinc-700/80 bg-zinc-900/95 p-6 shadow-2xl shadow-black/50 ring-1 ring-white/[0.06] backdrop-blur-xl"
+          className="relative z-10 w-full max-w-md rounded-2xl border border-zinc-200/90 bg-white/95 p-6 shadow-2xl shadow-zinc-900/15 ring-1 ring-zinc-200/60 backdrop-blur-xl dark:border-zinc-700/80 dark:bg-zinc-900/95 dark:shadow-black/50 dark:ring-white/[0.06]"
         >
           <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-emerald-500/10 ring-1 ring-emerald-500/25">
-            <svg
-              className="h-6 w-6 text-emerald-400"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
+            <LogIn
+              className="h-6 w-6 text-emerald-600 dark:text-emerald-400"
               strokeWidth={1.5}
               aria-hidden
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z"
-              />
-            </svg>
+            />
           </div>
           <h2
             id="auth-gate-title"
-            className="text-lg font-semibold tracking-tight text-zinc-100"
+            className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-100"
           >
             Sign in to generate
           </h2>
-          <p className="mt-3 text-sm leading-relaxed text-zinc-400">
+          <p className="mt-3 text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
             Generating images requires signing in with Google. Only accounts on
             the project owner&apos;s allowed list can use this app—if you are
             not on that list, sign-in may succeed but generation will still be
@@ -957,7 +908,7 @@ export function ImageStudio() {
             <button
               type="button"
               onClick={() => setAuthGateOpen(false)}
-              className="rounded-xl border border-zinc-600/80 bg-zinc-800/50 px-4 py-2.5 text-sm font-medium text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/50"
+              className="rounded-xl border border-zinc-200/90 bg-white px-4 py-2.5 text-sm font-medium text-zinc-700 shadow-sm transition hover:border-zinc-300 hover:bg-zinc-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 dark:border-zinc-600/80 dark:bg-zinc-800/50 dark:text-zinc-200 dark:shadow-none dark:hover:border-zinc-500 dark:hover:bg-zinc-800 dark:focus-visible:ring-emerald-400/50"
             >
               Cancel
             </button>
@@ -970,7 +921,7 @@ export function ImageStudio() {
                     typeof window !== "undefined" ? window.location.href : "/",
                 });
               }}
-              className="rounded-xl bg-gradient-to-r from-emerald-500 via-emerald-600 to-teal-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-emerald-950/30 transition hover:from-emerald-400 hover:via-emerald-500 hover:to-teal-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/50"
+              className="rounded-xl bg-gradient-to-r from-emerald-500 via-emerald-600 to-teal-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-emerald-900/25 transition hover:from-emerald-400 hover:via-emerald-500 hover:to-teal-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/45 dark:shadow-emerald-950/30 dark:focus-visible:ring-emerald-400/50"
             >
               Continue with Google
             </button>
@@ -980,56 +931,58 @@ export function ImageStudio() {
     ) : null;
 
   return (
-    <div className="relative flex h-dvh max-h-dvh flex-col overflow-hidden bg-zinc-950 text-zinc-100">
+    <div className="relative flex h-dvh max-h-dvh flex-col overflow-hidden bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
       {authGateDialog}
       <div
-        className="pointer-events-none fixed inset-0 -z-10 bg-zinc-950"
+        className="pointer-events-none fixed inset-0 -z-10 bg-zinc-50 dark:bg-zinc-950"
         aria-hidden
       />
       <div
-        className="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(ellipse_100%_80%_at_50%_-30%,rgba(16,185,129,0.12),transparent_55%)]"
+        className="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(ellipse_100%_80%_at_50%_-30%,rgba(16,185,129,0.14),transparent_55%)] dark:bg-[radial-gradient(ellipse_100%_80%_at_50%_-30%,rgba(16,185,129,0.12),transparent_55%)]"
         aria-hidden
       />
       <div
-        className="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(ellipse_60%_50%_at_100%_0%,rgba(139,92,246,0.08),transparent_45%)]"
+        className="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(ellipse_60%_50%_at_100%_0%,rgba(139,92,246,0.06),transparent_45%)] dark:bg-[radial-gradient(ellipse_60%_50%_at_100%_0%,rgba(139,92,246,0.08),transparent_45%)]"
         aria-hidden
       />
       <div
-        className="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(ellipse_50%_40%_at_0%_100%,rgba(59,130,246,0.05),transparent_50%)]"
+        className="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(ellipse_50%_40%_at_0%_100%,rgba(59,130,246,0.04),transparent_50%)] dark:bg-[radial-gradient(ellipse_50%_40%_at_0%_100%,rgba(59,130,246,0.05),transparent_50%)]"
         aria-hidden
       />
 
       <div className="relative z-0 flex min-h-0 flex-1 flex-col">
-        <header className="shrink-0 border-b border-zinc-800/60 bg-zinc-950/60 px-4 py-4 backdrop-blur-md sm:px-6 sm:py-5">
+        <header className="shrink-0 border-b border-zinc-200/80 bg-white/70 px-4 py-4 backdrop-blur-md dark:border-zinc-800/60 dark:bg-zinc-950/60 sm:px-6 sm:py-5">
           <div className="mx-auto flex max-w-[1600px] flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0 flex-1">
-              <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-zinc-700/50 bg-zinc-900/60 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-400">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.85)]" />
+              <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-zinc-200/90 bg-white/80 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-600 shadow-sm dark:border-zinc-700/50 dark:bg-zinc-900/60 dark:text-zinc-400 dark:shadow-none">
+                <Sparkles
+                  className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400"
+                  strokeWidth={2}
+                />
                 Gemini API
               </div>
-              <h1 className="bg-gradient-to-br from-white via-zinc-100 to-zinc-500 bg-clip-text text-2xl font-semibold tracking-tight text-transparent sm:text-3xl">
+              <h1 className="bg-gradient-to-br from-zinc-900 via-zinc-800 to-zinc-600 bg-clip-text text-2xl font-semibold tracking-tight text-transparent dark:from-white dark:via-zinc-100 dark:to-zinc-500 sm:text-3xl">
                 Gemini Image Studio
               </h1>
             </div>
-            <div className="flex shrink-0 flex-col items-stretch gap-2 sm:items-end">
+            <div className="flex shrink-0 flex-row flex-wrap items-center justify-end gap-2">
+              {dailyUsage ? <DailyUsagePill usage={dailyUsage} /> : null}
+              <EstimatedCostPopover cost={cost} />
+              <ThemeToggle />
               <UserMenu />
-              
             </div>
           </div>
         </header>
 
         {isXl ? (
-          <div className="mx-auto grid min-h-0 w-full max-w-[1600px] flex-1 grid-cols-12 divide-x divide-zinc-800/60">
-            <div className="col-span-5 flex min-h-0 flex-col bg-zinc-950/30">
+          <div className="mx-auto grid min-h-0 w-full max-w-[1600px] flex-1 grid-cols-12 divide-x divide-zinc-200/70 dark:divide-zinc-800/60">
+            <div className="col-span-7 flex min-h-0 flex-col bg-zinc-50/40 dark:bg-zinc-950/30">
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-4 py-4 sm:px-5">
                 <div className="flex flex-col gap-5">{inputSections}</div>
               </div>
               {actionFooter}
             </div>
-            <aside className="col-span-3 min-h-0 overflow-y-auto overscroll-y-contain bg-zinc-950/25 px-4 py-4 sm:px-5">
-              {estimatedCostCard}
-            </aside>
-            <div className="col-span-4 flex min-h-0 flex-col bg-zinc-950/20">
+            <div className="col-span-5 flex min-h-0 flex-col bg-zinc-50/25 dark:bg-zinc-950/20">
               {outputColumnHeader}
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-4 py-4 sm:px-5">
                 {resultsSection ?? emptyOutput}
@@ -1041,7 +994,6 @@ export function ImageStudio() {
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-4 pb-2 pt-3 sm:px-5">
               <div className="mx-auto flex max-w-2xl flex-col gap-5">
                 <div className="flex flex-col gap-5">{inputSections}</div>
-                {estimatedCostCard}
                 <div>
                   {outputColumnHeader}
                   <div className="mt-3">{resultsSection ?? emptyOutput}</div>

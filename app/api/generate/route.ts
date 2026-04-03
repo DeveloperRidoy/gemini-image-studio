@@ -2,6 +2,7 @@ import {
   GoogleGenAI,
   ThinkingLevel,
   type GenerateContentConfig,
+  type GenerateContentResponse,
   type Part,
 } from "@google/genai";
 import { NextResponse } from "next/server";
@@ -14,7 +15,10 @@ import {
   type ImageSizeKey,
 } from "@/lib/models";
 
+/** Align with Vercel serverless max (seconds). */
 export const maxDuration = 300;
+
+const SAFETY_BUFFER_MS = 10_000;
 
 type ReferenceImagePayload = {
   mimeType: string;
@@ -117,6 +121,51 @@ function buildConfig(
   return config;
 }
 
+type GenerateResultRow = {
+  prompt: string;
+  images: string[];
+  textParts: string[];
+  usage?: Record<string, unknown>;
+  error?: string;
+};
+
+function resultFromResponse(
+  prompt: string,
+  response: GenerateContentResponse | undefined,
+  errorMessage?: string,
+): GenerateResultRow {
+  if (errorMessage) {
+    return { prompt, images: [], textParts: [], error: errorMessage };
+  }
+  if (!response) {
+    return { prompt, images: [], textParts: [], error: "Empty response" };
+  }
+
+  const images: string[] = [];
+  const textParts: string[] = [];
+  for (const candidate of response.candidates ?? []) {
+    for (const part of candidate.content?.parts ?? []) {
+      if (part.thought) continue;
+      if (part.text) textParts.push(part.text);
+      if (part.inlineData?.data) {
+        const mime = part.inlineData.mimeType ?? "image/png";
+        images.push(`data:${mime};base64,${part.inlineData.data}`);
+      }
+    }
+  }
+
+  const usage = response.usageMetadata
+    ? {
+        promptTokenCount: response.usageMetadata.promptTokenCount,
+        candidatesTokenCount: response.usageMetadata.candidatesTokenCount,
+        totalTokenCount: response.usageMetadata.totalTokenCount,
+        thoughtsTokenCount: response.usageMetadata.thoughtsTokenCount,
+      }
+    : undefined;
+
+  return { prompt, images, textParts, usage };
+}
+
 export async function POST(req: Request) {
   const session = await auth();
   if (!session?.user?.email || !isAllowedEmail(session.user.email)) {
@@ -126,8 +175,9 @@ export async function POST(req: Request) {
     );
   }
 
-  const apiKey =
+  const rawKey =
     process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? process.env.GEMINI_API_KEY;
+  const apiKey = typeof rawKey === "string" ? rawKey.trim() : "";
   if (!apiKey) {
     return NextResponse.json(
       {
@@ -152,6 +202,18 @@ export async function POST(req: Request) {
       { status: 400 },
     );
   }
+
+  if (prompts.length !== 1) {
+    return NextResponse.json(
+      {
+        error:
+          "Send exactly one prompt per request. The client should call this route once per prompt.",
+      },
+      { status: 400 },
+    );
+  }
+
+  const prompt = prompts[0];
 
   const def = getModelDef(body.modelId);
 
@@ -178,55 +240,33 @@ export async function POST(req: Request) {
     );
   }
 
+  const wallStart = Date.now();
+  const absoluteDeadlineMs =
+    wallStart + maxDuration * 1000 - SAFETY_BUFFER_MS;
+
   const ai = new GoogleGenAI({ apiKey });
   const config = buildConfig(body, hasReferenceImages);
   const model = def.apiId;
 
-  const results: {
-    prompt: string;
-    images: string[];
-    textParts: string[];
-    usage?: Record<string, unknown>;
-    error?: string;
-  }[] = [];
-
-  for (const prompt of prompts) {
-    try {
-      const contents = buildContents(prompt, referenceImages);
-      const response = await ai.models.generateContent({
-        model,
-        contents,
-        config,
-      });
-
-      const images: string[] = [];
-      const textParts: string[] = [];
-      for (const candidate of response.candidates ?? []) {
-        for (const part of candidate.content?.parts ?? []) {
-          if (part.thought) continue;
-          if (part.text) textParts.push(part.text);
-          if (part.inlineData?.data) {
-            const mime = part.inlineData.mimeType ?? "image/png";
-            images.push(`data:${mime};base64,${part.inlineData.data}`);
-          }
-        }
-      }
-
-      const usage = response.usageMetadata
-        ? {
-            promptTokenCount: response.usageMetadata.promptTokenCount,
-            candidatesTokenCount: response.usageMetadata.candidatesTokenCount,
-            totalTokenCount: response.usageMetadata.totalTokenCount,
-            thoughtsTokenCount: response.usageMetadata.thoughtsTokenCount,
-          }
-        : undefined;
-
-      results.push({ prompt, images, textParts, usage });
-    } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : String(e);
-      results.push({ prompt, images: [], textParts: [], error: message });
-    }
+  try {
+    const contents = buildContents(prompt, referenceImages);
+    const remainingMs = Math.max(1000, absoluteDeadlineMs - Date.now());
+    const callConfig = {
+      ...config,
+      abortSignal: AbortSignal.timeout(remainingMs),
+    };
+    const response = await ai.models.generateContent({
+      model,
+      contents,
+      config: callConfig,
+    });
+    const row = resultFromResponse(prompt, response);
+    return NextResponse.json({ results: [row], model });
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    return NextResponse.json({
+      results: [resultFromResponse(prompt, undefined, message)],
+      model,
+    });
   }
-
-  return NextResponse.json({ results, model });
 }
