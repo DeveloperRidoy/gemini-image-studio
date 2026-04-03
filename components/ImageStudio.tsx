@@ -10,7 +10,14 @@ import {
   Sparkles,
 } from "lucide-react";
 import { signIn, useSession } from "next-auth/react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   IMAGE_MODELS,
   IMAGE_SIZE_OPTIONS,
@@ -29,9 +36,10 @@ import {
   type DailyUsage,
 } from "@/lib/daily-usage-storage";
 import {
-  readFileAsReference,
+  fileToLocalReference,
   type LocalReferenceImage,
 } from "@/lib/reference-image-files";
+import { uploadReferenceFilesViaS3 } from "@/lib/reference-upload-client";
 import { DailyUsagePill } from "@/components/DailyUsagePill";
 import { EstimatedCostPopover } from "@/components/EstimatedCostPopover";
 import { ReferenceImagesField } from "@/components/ReferenceImagesField";
@@ -64,6 +72,64 @@ function newBatchField(value = ""): BatchPromptField {
   return { id, value };
 }
 
+type GenerateJsonBody = {
+  error?: string;
+  results?: ApiResult[];
+};
+
+/**
+ * Vercel/proxies often return HTML or plain text for 413/504; `res.json()` then throws
+ * and batch rows stay pending. Read text first and parse safely.
+ */
+async function readGenerateApiResponse(res: Response): Promise<{
+  ok: boolean;
+  status: number;
+  data: GenerateJsonBody | null;
+  parseError: string | null;
+}> {
+  const text = await res.text();
+  if (!text.trim()) {
+    return {
+      ok: res.ok,
+      status: res.status,
+      data: null,
+      parseError: `Empty response (HTTP ${res.status}).`,
+    };
+  }
+  try {
+    const data = JSON.parse(text) as GenerateJsonBody;
+    return { ok: res.ok, status: res.status, data, parseError: null };
+  } catch {
+    const preview = text.slice(0, 120).replace(/\s+/g, " ").trim();
+    return {
+      ok: res.ok,
+      status: res.status,
+      data: null,
+      parseError:
+        preview.length > 0
+          ? `Non-JSON response (HTTP ${res.status}): ${preview}${text.length > 120 ? "…" : ""}`
+          : `Invalid response body (HTTP ${res.status}).`,
+    };
+  }
+}
+
+function humanizeGenerateFailure(
+  status: number,
+  parseError: string | null,
+  apiError: string | undefined,
+  statusText: string,
+): string {
+  if (apiError?.trim()) return apiError.trim();
+  if (status === 413) {
+    return "Request too large for the host (HTTP 413). Try fewer or smaller reference images, or compress uploads.";
+  }
+  if (status === 504) {
+    return "Gateway timeout (HTTP 504). Try fewer references, a shorter prompt, or retry.";
+  }
+  if (parseError) return parseError;
+  return statusText.trim() || `Request failed (HTTP ${status}).`;
+}
+
 const labelCls =
   "mb-2 block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-600 dark:text-zinc-500";
 const fieldCls =
@@ -74,8 +140,6 @@ const sectionTitleCls =
   "mb-4 flex items-center gap-2 text-[13px] font-semibold tracking-tight text-zinc-900 dark:text-zinc-100";
 const checkboxCls =
   "h-4 w-4 rounded border-zinc-300 bg-white text-emerald-600 focus:ring-2 focus:ring-emerald-500/25 dark:border-zinc-600 dark:bg-zinc-900 dark:text-emerald-500 dark:focus:ring-emerald-500/30";
-
-const XL_MEDIA = "(min-width: 1280px)";
 
 function SectionTitle({
   children,
@@ -92,18 +156,6 @@ function SectionTitle({
       {children}
     </h2>
   );
-}
-
-function useMediaQuery(query: string) {
-  const [matches, setMatches] = useState(false);
-  useEffect(() => {
-    const mq = window.matchMedia(query);
-    setMatches(mq.matches);
-    const onChange = () => setMatches(mq.matches);
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, [query]);
-  return matches;
 }
 
 export function ImageStudio() {
@@ -137,7 +189,6 @@ export function ImageStudio() {
   const [lastError, setLastError] = useState<string | null>(null);
   const [authGateOpen, setAuthGateOpen] = useState(false);
   const [dailyUsage, setDailyUsage] = useState<DailyUsage | null>(null);
-  const isXl = useMediaQuery(XL_MEDIA);
 
   useEffect(() => {
     setDailyUsage(loadDailyUsage());
@@ -182,34 +233,86 @@ export function ImageStudio() {
     return () => window.removeEventListener("keydown", onKey);
   }, [authGateOpen]);
 
-  async function addReferenceFiles(source: FileList | File[] | null) {
+  const processReferencesBatch = useCallback(
+    async (slots: LocalReferenceImage[]) => {
+      if (slots.length === 0) return;
+      const ids = new Set(slots.map((s) => s.id));
+
+      setReferenceImages((prev) =>
+        prev.map((r) =>
+          ids.has(r.id)
+            ? { ...r, uploadStatus: "uploading", uploadError: undefined }
+            : r,
+        ),
+      );
+
+      try {
+        const files = await uploadReferenceFilesViaS3(
+          slots.map((s) => ({ mimeType: s.mimeType, sourceFile: s.sourceFile })),
+        );
+
+        setReferenceImages((prev) =>
+          prev.map((r) => {
+            if (!ids.has(r.id)) return r;
+            const idx = slots.findIndex((s) => s.id === r.id);
+            const f = files[idx];
+            if (!f) {
+              return {
+                ...r,
+                uploadStatus: "error",
+                uploadError: "Missing file in registration response.",
+              };
+            }
+            return {
+              ...r,
+              uploadStatus: "ready",
+              fileUri: f.fileUri,
+              geminiMimeType: f.mimeType,
+              uploadError: undefined,
+            };
+          }),
+        );
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setReferenceImages((prev) =>
+          prev.map((r) =>
+            ids.has(r.id)
+              ? { ...r, uploadStatus: "error", uploadError: msg }
+              : r,
+          ),
+        );
+      }
+    },
+    [],
+  );
+
+  function addReferenceFiles(source: FileList | File[] | null) {
     if (!source?.length) return;
+    if (sessionStatus === "loading") return;
+    if (!session?.user) {
+      setAuthGateOpen(true);
+      return;
+    }
     const candidates = Array.from(source).filter((f) =>
       f.type.startsWith("image/"),
     );
     const processed: LocalReferenceImage[] = [];
     for (const file of candidates) {
       try {
-        const { mimeType, data, preview } = await readFileAsReference(file);
-        processed.push({
-          id:
-            typeof crypto !== "undefined" && "randomUUID" in crypto
-              ? crypto.randomUUID()
-              : `${Date.now()}-${Math.random()}-${processed.length}`,
-          mimeType,
-          data,
-          preview,
-        });
+        processed.push(fileToLocalReference(file));
       } catch {
         /* skip unreadable file */
       }
     }
     if (!processed.length) return;
+
+    const accepted: LocalReferenceImage[] = [];
     setReferenceImages((prev) => {
       const next = [...prev];
       let i = 0;
       while (i < processed.length && next.length < maxReferenceImages) {
         next.push(processed[i]);
+        accepted.push(processed[i]);
         i++;
       }
       for (; i < processed.length; i++) {
@@ -217,6 +320,30 @@ export function ImageStudio() {
       }
       return next;
     });
+    if (accepted.length) void processReferencesBatch(accepted);
+  }
+
+  function retryReferenceUpload(id: string) {
+    if (sessionStatus === "loading") return;
+    if (!session?.user) {
+      setAuthGateOpen(true);
+      return;
+    }
+    let batch: LocalReferenceImage[] = [];
+    setReferenceImages((prev) => {
+      const slot = prev.find((r) => r.id === id);
+      if (!slot || slot.uploadStatus === "ready") return prev;
+      const nextSlot: LocalReferenceImage = {
+        ...slot,
+        uploadStatus: "pending",
+        uploadError: undefined,
+        fileUri: undefined,
+        geminiMimeType: undefined,
+      };
+      batch = [nextSlot];
+      return prev.map((r) => (r.id === id ? nextSlot : r));
+    });
+    if (batch.length) queueMicrotask(() => void processReferencesBatch(batch));
   }
 
   function removeReferenceImage(id: string) {
@@ -265,12 +392,28 @@ export function ImageStudio() {
     googleSearch,
   ]);
 
+  const referenceBlockGenerate =
+    referenceImages.length > 0 &&
+    referenceImages.some((r) => r.uploadStatus !== "ready");
+
   async function onGenerate() {
     setLastError(null);
     setResults(null);
     if (sessionStatus === "loading") return;
     if (!session?.user) {
       setAuthGateOpen(true);
+      return;
+    }
+    if (referenceBlockGenerate) {
+      const busy = referenceImages.some(
+        (r) =>
+          r.uploadStatus === "pending" || r.uploadStatus === "uploading",
+      );
+      setLastError(
+        busy
+          ? "Wait for reference images to finish uploading before generating."
+          : "Remove failed reference images or tap Retry, then generate again.",
+      );
       return;
     }
     if (batchMode) {
@@ -286,13 +429,19 @@ export function ImageStudio() {
       }
     }
 
+    let promptsQueue: string[] = [];
+
     setLoading(true);
     try {
-      const referencePayload =
+      promptsQueue = batchMode
+        ? promptsToSend
+        : [promptsToSend[0] ?? ""].filter(Boolean);
+
+      const referenceFileRefs: { fileUri: string; mimeType: string }[] | undefined =
         referenceImages.length > 0
           ? referenceImages.map((r) => ({
-              mimeType: r.mimeType,
-              data: r.data,
+              fileUri: r.fileUri as string,
+              mimeType: r.geminiMimeType ?? r.mimeType,
             }))
           : undefined;
 
@@ -308,12 +457,8 @@ export function ImageStudio() {
         personGeneration: personGeneration || undefined,
         temperature: temperature === "" ? undefined : Number(temperature),
         seed: seed === "" ? undefined : Number(seed),
-        referenceImages: referencePayload,
+        referenceFileRefs,
       };
-
-      const promptsQueue = batchMode
-        ? promptsToSend
-        : [promptsToSend[0] ?? ""].filter(Boolean);
 
       if (batchMode && promptsQueue.length > 0) {
         setResults(
@@ -325,6 +470,36 @@ export function ImageStudio() {
           })),
         );
       }
+
+      const markBatchFailed = (
+        failedIndex: number,
+        failedPrompt: string,
+        message: string,
+      ) => {
+        if (!batchMode) return;
+        setResults((prev) => {
+          if (!prev || prev.length !== promptsQueue.length) return prev;
+          return prev.map((r, idx) => {
+            if (idx === failedIndex) {
+              return {
+                prompt: failedPrompt,
+                images: [],
+                textParts: [],
+                error: message,
+                pending: false,
+              };
+            }
+            if (idx > failedIndex && r.pending) {
+              return {
+                ...r,
+                pending: false,
+                error: "Skipped — a previous request failed.",
+              };
+            }
+            return r;
+          });
+        });
+      };
 
       const completedForBilling: ApiResult[] = [];
 
@@ -338,23 +513,18 @@ export function ImageStudio() {
             prompts: [p],
           }),
         });
-        const data = await res.json();
-        if (!res.ok) {
-          setLastError(data.error ?? res.statusText);
-          if (batchMode) {
-            setResults((prev) => {
-              if (!prev || prev.length !== promptsQueue.length) return prev;
-              const next = [...prev];
-              next[i] = {
-                prompt: p,
-                images: [],
-                textParts: [],
-                error: data.error ?? res.statusText,
-                pending: false,
-              };
-              return next;
-            });
-          }
+        const { ok, status, data, parseError } =
+          await readGenerateApiResponse(res);
+        const failMessage = humanizeGenerateFailure(
+          status,
+          parseError,
+          data?.error,
+          res.statusText,
+        );
+
+        if (parseError !== null || !ok || !data) {
+          setLastError(failMessage);
+          markBatchFailed(i, p, failMessage);
           const imageCount = completedForBilling.reduce(
             (acc, r) => acc + (r.error ? 0 : r.images.length),
             0,
@@ -370,7 +540,8 @@ export function ImageStudio() {
           }
           return;
         }
-        const raw = (data.results as ApiResult[])[0];
+
+        const raw = data.results?.[0];
         const row: ApiResult = raw
           ? { ...raw, pending: false }
           : {
@@ -423,7 +594,14 @@ export function ImageStudio() {
         }
       }
     } catch (e) {
-      setLastError(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      setLastError(msg);
+      setResults((prev) => {
+        if (!prev?.length || !prev.some((r) => r.pending)) return prev;
+        return prev.map((r) =>
+          r.pending ? { ...r, pending: false, error: msg } : r,
+        );
+      });
     } finally {
       setLoading(false);
     }
@@ -559,6 +737,15 @@ export function ImageStudio() {
           onAddFiles={addReferenceFiles}
           onRemove={removeReferenceImage}
           onClearAll={clearReferenceImages}
+          onRetryUpload={retryReferenceUpload}
+          referenceSession={
+            sessionStatus === "loading"
+              ? "loading"
+              : session?.user
+                ? "signedIn"
+                : "signedOut"
+          }
+          onRequireSignIn={() => setAuthGateOpen(true)}
         />
       </section>
 
@@ -817,7 +1004,7 @@ export function ImageStudio() {
     <button
       type="button"
       onClick={onGenerate}
-      disabled={loading}
+      disabled={loading || referenceBlockGenerate}
       className="group relative flex w-full items-center justify-center gap-2 overflow-hidden rounded-xl bg-gradient-to-r from-emerald-500 via-emerald-600 to-teal-600 px-5 py-3.5 text-sm font-semibold text-white shadow-lg shadow-emerald-900/25 transition hover:from-emerald-400 hover:via-emerald-500 hover:to-teal-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 disabled:cursor-not-allowed disabled:opacity-45 dark:shadow-emerald-950/40 dark:focus-visible:ring-emerald-400/50"
     >
       {loading ? (
@@ -974,37 +1161,29 @@ export function ImageStudio() {
           </div>
         </header>
 
-        {isXl ? (
-          <div className="mx-auto grid min-h-0 w-full max-w-[1600px] flex-1 grid-cols-12 divide-x divide-zinc-200/70 dark:divide-zinc-800/60">
-            <div className="col-span-7 flex min-h-0 flex-col bg-zinc-50/40 dark:bg-zinc-950/30">
-              <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-4 py-4 sm:px-5">
-                <div className="flex flex-col gap-5">{inputSections}</div>
+        <div className="mx-auto flex min-h-0 w-full max-w-[1600px] flex-1 flex-col xl:grid xl:grid-cols-12 xl:grid-rows-1 xl:min-h-0 xl:divide-x xl:divide-zinc-200/70 dark:xl:divide-zinc-800/60">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-zinc-50/40 dark:bg-zinc-950/30 xl:col-span-7 xl:min-h-0">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-4 pb-2 pt-3 sm:px-5 xl:py-4">
+              <div className="mx-auto flex max-w-2xl flex-col gap-5 xl:mx-0 xl:max-w-none">
+                {inputSections}
               </div>
-              {actionFooter}
+              <div className="mx-auto mt-6 max-w-2xl xl:mt-0 xl:hidden">
+                {outputColumnHeader}
+                <div className="mt-3">{resultsSection ?? emptyOutput}</div>
+              </div>
             </div>
-            <div className="col-span-5 flex min-h-0 flex-col bg-zinc-50/25 dark:bg-zinc-950/20">
-              {outputColumnHeader}
-              <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-4 py-4 sm:px-5">
-                {resultsSection ?? emptyOutput}
-              </div>
+            <div className="hidden shrink-0 xl:block">{actionFooter}</div>
+          </div>
+          <div className="hidden min-h-0 min-w-0 flex-col bg-zinc-50/25 dark:bg-zinc-950/20 xl:col-span-5 xl:col-start-8 xl:flex xl:min-h-0">
+            {outputColumnHeader}
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-4 py-4 sm:px-5">
+              {resultsSection ?? emptyOutput}
             </div>
           </div>
-        ) : (
-          <div className="mx-auto flex min-h-0 w-full max-w-[1600px] flex-1 flex-col">
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-4 pb-2 pt-3 sm:px-5">
-              <div className="mx-auto flex max-w-2xl flex-col gap-5">
-                <div className="flex flex-col gap-5">{inputSections}</div>
-                <div>
-                  {outputColumnHeader}
-                  <div className="mt-3">{resultsSection ?? emptyOutput}</div>
-                </div>
-              </div>
-            </div>
-            <div className="pb-[env(safe-area-inset-bottom)]">
-              {actionFooter}
-            </div>
+          <div className="shrink-0 pb-[env(safe-area-inset-bottom)] xl:hidden">
+            {actionFooter}
           </div>
-        )}
+        </div>
       </div>
     </div>
   );

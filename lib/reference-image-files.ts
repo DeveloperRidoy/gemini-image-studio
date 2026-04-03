@@ -1,31 +1,30 @@
+export type ReferenceUploadStatus = "pending" | "uploading" | "ready" | "error";
+
 export type LocalReferenceImage = {
   id: string;
   preview: string;
   mimeType: string;
-  data: string;
+  /** Original file until S3 + Gemini registration completes. */
+  sourceFile: File;
+  uploadStatus: ReferenceUploadStatus;
+  /** From Gemini Files API once `uploadStatus === "ready"`. */
+  fileUri?: string;
+  geminiMimeType?: string;
+  uploadError?: string;
 };
 
-export function readFileAsReference(file: File): Promise<{
-  mimeType: string;
-  data: string;
-  preview: string;
-}> {
-  return new Promise((resolve, reject) => {
-    const preview = URL.createObjectURL(file);
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      const comma = result.indexOf(",");
-      const base64 = comma >= 0 ? result.slice(comma + 1) : result;
-      resolve({
-        mimeType: file.type || "image/png",
-        data: base64,
-        preview,
-      });
-    };
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
+export function fileToLocalReference(file: File): LocalReferenceImage {
+  const id =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return {
+    id,
+    preview: URL.createObjectURL(file),
+    mimeType: file.type || "image/png",
+    sourceFile: file,
+    uploadStatus: "pending",
+  };
 }
 
 /** Image files from a drag-and-drop `DataTransfer` (OS files and in-browser file items). */

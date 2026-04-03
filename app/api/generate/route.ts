@@ -25,6 +25,12 @@ type ReferenceImagePayload = {
   data: string;
 };
 
+/** References from the Gemini Files API (`fileData` in generateContent). */
+type ReferenceFileRefPayload = {
+  fileUri: string;
+  mimeType: string;
+};
+
 type GenerateBody = {
   modelId: ImageModelId;
   prompts: string[];
@@ -36,22 +42,42 @@ type GenerateBody = {
   personGeneration?: "ALLOW_ALL" | "ALLOW_ADULT" | "ALLOW_NONE";
   temperature?: number;
   seed?: number;
+  /** Small payloads only; prefer referenceFileRefs from Files API uploads. */
   referenceImages?: ReferenceImagePayload[];
+  referenceFileRefs?: ReferenceFileRefPayload[];
 };
 
 function buildContents(
   prompt: string,
-  refs: ReferenceImagePayload[] | undefined,
+  fileRefs: ReferenceFileRefPayload[] | undefined,
+  inlineRefs: ReferenceImagePayload[] | undefined,
 ): string | Part[] {
-  if (!refs?.length) return prompt;
+  const hasFile = fileRefs && fileRefs.length > 0;
+  const hasInline = inlineRefs && inlineRefs.length > 0;
+  if (!hasFile && !hasInline) return prompt;
+
   const parts: Part[] = [{ text: prompt }];
-  for (const r of refs) {
-    parts.push({
-      inlineData: {
-        mimeType: r.mimeType || "image/png",
-        data: r.data,
-      },
-    });
+  if (hasFile) {
+    for (const r of fileRefs!) {
+      const uri = r.fileUri?.trim();
+      if (!uri) continue;
+      parts.push({
+        fileData: {
+          fileUri: uri,
+          mimeType: r.mimeType || "image/png",
+        },
+      });
+    }
+  }
+  if (hasInline) {
+    for (const r of inlineRefs!) {
+      parts.push({
+        inlineData: {
+          mimeType: r.mimeType || "image/png",
+          data: r.data,
+        },
+      });
+    }
   }
   return parts;
 }
@@ -227,9 +253,15 @@ export async function POST(req: Request) {
     );
   }
 
-  const refsRaw = body.referenceImages ?? [];
-  const referenceImages = refsRaw.slice(0, def.maxReferenceImages);
-  const hasReferenceImages = referenceImages.length > 0;
+  const fileRefsRaw = body.referenceFileRefs ?? [];
+  const inlineRaw = body.referenceImages ?? [];
+  const referenceFileRefs = fileRefsRaw
+    .filter((r) => r.fileUri?.trim())
+    .slice(0, def.maxReferenceImages);
+  const inlineAllowed = Math.max(0, def.maxReferenceImages - referenceFileRefs.length);
+  const referenceImages = inlineRaw.slice(0, inlineAllowed);
+  const hasReferenceImages =
+    referenceFileRefs.length > 0 || referenceImages.length > 0;
   if (body.googleSearch === "web_image" && !def.supportsImageGrounding) {
     return NextResponse.json(
       {
@@ -249,7 +281,11 @@ export async function POST(req: Request) {
   const model = def.apiId;
 
   try {
-    const contents = buildContents(prompt, referenceImages);
+    const contents = buildContents(
+      prompt,
+      referenceFileRefs,
+      referenceImages.length > 0 ? referenceImages : undefined,
+    );
     const remainingMs = Math.max(1000, absoluteDeadlineMs - Date.now());
     const callConfig = {
       ...config,
