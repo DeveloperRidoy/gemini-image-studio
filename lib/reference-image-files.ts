@@ -26,6 +26,18 @@ export function fileToLocalReference(file: File): LocalReferenceImage {
   };
 }
 
+/** True when the drag likely carries local files (OS / browser file drag). */
+export function dataTransferMayContainFiles(
+  dataTransfer: DataTransfer | null,
+): boolean {
+  if (!dataTransfer?.types) return false;
+  const { types } = dataTransfer;
+  for (let i = 0; i < types.length; i++) {
+    if (types[i] === "Files") return true;
+  }
+  return false;
+}
+
 /** Image files from a drag-and-drop `DataTransfer` (OS files and in-browser file items). */
 export function collectImageFilesFromDataTransfer(
   dataTransfer: DataTransfer,

@@ -8,6 +8,7 @@ import {
   LogIn,
   Plus,
   Sparkles,
+  Upload,
 } from "lucide-react";
 import { signIn, useSession } from "next-auth/react";
 import {
@@ -37,6 +38,8 @@ import {
   type DailyUsage,
 } from "@/lib/daily-usage-storage";
 import {
+  collectImageFilesFromDataTransfer,
+  dataTransferMayContainFiles,
   fileToLocalReference,
   type LocalReferenceImage,
 } from "@/lib/reference-image-files";
@@ -209,7 +212,12 @@ export function ImageStudio() {
   const [results, setResults] = useState<ApiResult[] | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
   const [authGateOpen, setAuthGateOpen] = useState(false);
+  const [globalFileDragOverlay, setGlobalFileDragOverlay] = useState(false);
   const [dailyUsage, setDailyUsage] = useState<DailyUsage | null>(null);
+
+  const authGateOpenRef = useRef(false);
+  authGateOpenRef.current = authGateOpen;
+  const globalDragOverlayDepthRef = useRef(0);
 
   useEffect(() => {
     setDailyUsage(loadDailyUsage());
@@ -253,6 +261,39 @@ export function ImageStudio() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [authGateOpen]);
+
+  useEffect(() => {
+    if (authGateOpen) {
+      globalDragOverlayDepthRef.current = 0;
+      setGlobalFileDragOverlay(false);
+    }
+  }, [authGateOpen]);
+
+  useEffect(() => {
+    const onEnter = (e: DragEvent) => {
+      if (!dataTransferMayContainFiles(e.dataTransfer)) return;
+      e.preventDefault();
+      if (authGateOpenRef.current) return;
+      setGlobalFileDragOverlay(true);
+    };
+    const onOver = (e: DragEvent) => {
+      if (!dataTransferMayContainFiles(e.dataTransfer)) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    };
+    const onDragEnd = () => {
+      globalDragOverlayDepthRef.current = 0;
+      setGlobalFileDragOverlay(false);
+    };
+    window.addEventListener("dragenter", onEnter);
+    window.addEventListener("dragover", onOver);
+    window.addEventListener("dragend", onDragEnd);
+    return () => {
+      window.removeEventListener("dragenter", onEnter);
+      window.removeEventListener("dragover", onOver);
+      window.removeEventListener("dragend", onDragEnd);
+    };
+  }, []);
 
   useLayoutEffect(() => {
     if (!batchMode) return;
@@ -1184,9 +1225,61 @@ export function ImageStudio() {
       </div>
     ) : null;
 
+  const globalFileDropOverlay =
+    globalFileDragOverlay && !authGateOpen ? (
+      <div
+        className="fixed inset-0 z-[90] flex items-center justify-center bg-zinc-950/45 p-4 backdrop-blur-[3px] dark:bg-black/55"
+        onDragEnter={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          globalDragOverlayDepthRef.current += 1;
+        }}
+        onDragLeave={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          globalDragOverlayDepthRef.current -= 1;
+          if (globalDragOverlayDepthRef.current <= 0) {
+            globalDragOverlayDepthRef.current = 0;
+            setGlobalFileDragOverlay(false);
+          }
+        }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          e.dataTransfer.dropEffect = "copy";
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          globalDragOverlayDepthRef.current = 0;
+          setGlobalFileDragOverlay(false);
+          const files = collectImageFilesFromDataTransfer(e.dataTransfer);
+          if (files.length) addReferenceFiles(files);
+        }}
+      >
+        <div
+          className="pointer-events-none max-w-md rounded-2xl border-2 border-dashed border-emerald-400/90 bg-emerald-500/10 px-8 py-10 text-center shadow-lg shadow-emerald-950/25 ring-1 ring-emerald-500/35 dark:border-emerald-400/75 dark:bg-emerald-500/15 dark:ring-emerald-500/30"
+          aria-hidden
+        >
+          <Upload
+            className="mx-auto mb-3 h-12 w-12 text-emerald-200 dark:text-emerald-300"
+            strokeWidth={1.25}
+            aria-hidden
+          />
+          <p className="text-lg font-semibold tracking-tight text-white drop-shadow-sm dark:text-emerald-50">
+            Drop images to add references
+          </p>
+          <p className="mt-2 text-sm text-emerald-100/95 dark:text-emerald-200/85">
+            Release anywhere · up to {maxReferenceImages} for this model
+          </p>
+        </div>
+      </div>
+    ) : null;
+
   return (
     <div className="relative flex h-dvh max-h-dvh flex-col overflow-hidden bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
       {authGateDialog}
+      {globalFileDropOverlay}
       <div
         className="pointer-events-none fixed inset-0 -z-10 bg-zinc-50 dark:bg-zinc-950"
         aria-hidden

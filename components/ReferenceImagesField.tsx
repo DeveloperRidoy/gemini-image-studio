@@ -3,7 +3,10 @@
 import { Loader2, RefreshCw, Upload, X } from "lucide-react";
 import { useCallback, useId, useState } from "react";
 import type { LocalReferenceImage } from "@/lib/reference-image-files";
-import { collectImageFilesFromDataTransfer } from "@/lib/reference-image-files";
+import {
+  collectImageFilesFromDataTransfer,
+  dataTransferMayContainFiles,
+} from "@/lib/reference-image-files";
 
 const labelMetaCls =
   "mb-2 block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-600 dark:text-zinc-500";
@@ -57,6 +60,7 @@ export function ReferenceImagesField({
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (!dataTransferMayContainFiles(e.dataTransfer)) return;
     e.dataTransfer.dropEffect = "copy";
   }, []);
 
@@ -65,6 +69,7 @@ export function ReferenceImagesField({
       e.preventDefault();
       e.stopPropagation();
       if (referenceSession === "loading") return;
+      if (!dataTransferMayContainFiles(e.dataTransfer)) return;
       setDropActive(true);
     },
     [referenceSession],
@@ -99,8 +104,9 @@ export function ReferenceImagesField({
       </div>
       <p className="mb-3 text-xs leading-relaxed text-zinc-600 dark:text-zinc-500">
         Upload images to edit, compose, or use as style references. Each file is
-        sent to S3 and registered with Gemini as soon as you add it (spinner on
-        the thumbnail until ready). Generate stays fast once uploads finish.
+        sent to S3 as soon as you add them (spinner on the thumbnail until
+        ready). You can drop images anywhere on the page. Generate stays fast
+        once uploads finish.
         Response modalities are set automatically (image-only for text-only
         prompts; text+image when references are present). Up to{" "}
         {maxReferenceImages} images for this model.
@@ -123,7 +129,7 @@ export function ReferenceImagesField({
             className="h-3.5 w-3.5 shrink-0 animate-spin"
             aria-hidden
           />
-          Uploading references to storage and Gemini…
+          Uploading references…
         </p>
       ) : null}
 
@@ -161,7 +167,7 @@ export function ReferenceImagesField({
               <span className="text-sm text-zinc-700 dark:text-zinc-300">
                 {dropActive
                   ? "Drop images here"
-                  : "Click to upload or drop images"}
+                  : "Click to upload or drop anywhere"}
               </span>
               <span className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-600">
                 PNG, JPEG, WebP… · {images.length}/{maxReferenceImages}
@@ -190,7 +196,7 @@ export function ReferenceImagesField({
                 ? "Checking sign-in…"
                 : dropActive
                   ? "Sign in to upload"
-                  : "Sign in to upload or drop images"}
+                  : "Sign in to upload or drop anywhere"}
             </span>
             <span className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-600">
               PNG, JPEG, WebP… · {images.length}/{maxReferenceImages}
