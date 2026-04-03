@@ -102,3 +102,9 @@ export function aspectRatiosForModel(modelId: ImageModelId): readonly string[] {
   if (modelId === "gemini-3-pro-image-preview") return ASPECT_RATIOS_3_PRO;
   return ASPECT_RATIOS_31_FLASH;
 }
+
+/** Prefer 9:16 when the model supports it (common for vertical / mobile frames). */
+export function defaultAspectRatioForModel(modelId: ImageModelId): string {
+  const opts = aspectRatiosForModel(modelId);
+  return (opts as readonly string[]).includes("9:16") ? "9:16" : "1:1";
+}

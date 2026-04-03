@@ -24,6 +24,7 @@ import {
   IMAGE_MODELS,
   IMAGE_SIZE_OPTIONS,
   aspectRatiosForModel,
+  defaultAspectRatioForModel,
   getModelDef,
   type ImageModelId,
   type ImageSizeKey,
@@ -177,11 +178,12 @@ function SectionTitle({
   );
 }
 
+const DEFAULT_STUDIO_MODEL_ID: ImageModelId =
+  "gemini-3.1-flash-image-preview";
+
 export function ImageStudio() {
   const { data: session, status: sessionStatus } = useSession();
-  const [modelId, setModelId] = useState<ImageModelId>(
-    "gemini-3.1-flash-image-preview",
-  );
+  const [modelId, setModelId] = useState<ImageModelId>(DEFAULT_STUDIO_MODEL_ID);
   const [prompt, setPrompt] = useState("");
   const [batchMode, setBatchMode] = useState(false);
   const [batchPromptFields, setBatchPromptFields] = useState<
@@ -189,7 +191,9 @@ export function ImageStudio() {
   >(() => [newBatchField()]);
   const [batchHeaderPrompt, setBatchHeaderPrompt] = useState("");
   const [batchFooterPrompt, setBatchFooterPrompt] = useState("");
-  const [aspectRatio, setAspectRatio] = useState<string>("1:1");
+  const [aspectRatio, setAspectRatio] = useState<string>(() =>
+    defaultAspectRatioForModel(DEFAULT_STUDIO_MODEL_ID),
+  );
   const [imageSize, setImageSize] = useState<ImageSizeKey>("1K");
   const [referenceImages, setReferenceImages] = useState<LocalReferenceImage[]>(
     [],
@@ -230,10 +234,10 @@ export function ImageStudio() {
   useEffect(() => {
     setAspectRatio((ar) => {
       const opts = aspectRatiosForModel(modelId);
-      if (!(opts as readonly string[]).includes(ar)) {
-        return "1:1";
+      if ((opts as readonly string[]).includes(ar)) {
+        return ar;
       }
-      return ar;
+      return defaultAspectRatioForModel(modelId);
     });
   }, [modelId]);
 
