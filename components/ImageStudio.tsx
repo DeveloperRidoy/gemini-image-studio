@@ -40,8 +40,10 @@ import {
 } from "@/lib/daily-usage-storage";
 import {
   collectImageFilesFromDataTransfer,
+  dataTransferIsReferenceReorderDrag,
   dataTransferMayContainFiles,
   fileToLocalReference,
+  reorderLocalReferencesById,
   type LocalReferenceImage,
 } from "@/lib/reference-image-files";
 import { uploadReferenceFilesViaS3 } from "@/lib/reference-upload-client";
@@ -434,6 +436,12 @@ export function ImageStudio() {
       if (target) URL.revokeObjectURL(target.preview);
       return prev.filter((r) => r.id !== id);
     });
+  }
+
+  function reorderReferenceImages(draggedId: string, toIndex: number) {
+    setReferenceImages((prev) =>
+      reorderLocalReferencesById(prev, draggedId, toIndex),
+    );
   }
 
   function clearReferenceImages() {
@@ -846,6 +854,7 @@ export function ImageStudio() {
           maxReferenceImages={maxReferenceImages}
           images={referenceImages}
           onAddFiles={addReferenceFiles}
+          onReorder={reorderReferenceImages}
           onRemove={removeReferenceImage}
           onClearAll={clearReferenceImages}
           onRetryUpload={retryReferenceUpload}
@@ -1256,6 +1265,7 @@ export function ImageStudio() {
           e.stopPropagation();
           globalDragOverlayDepthRef.current = 0;
           setGlobalFileDragOverlay(false);
+          if (dataTransferIsReferenceReorderDrag(e.dataTransfer)) return;
           const files = collectImageFilesFromDataTransfer(e.dataTransfer);
           if (files.length) addReferenceFiles(files);
         }}

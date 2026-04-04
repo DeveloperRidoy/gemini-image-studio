@@ -26,6 +26,20 @@ export function fileToLocalReference(file: File): LocalReferenceImage {
   };
 }
 
+/** Custom payload so in-app reference reordering is not treated as a new file upload. */
+export const REFERENCE_REORDER_MIME = "application/x-gemini-ref-reorder";
+
+export function dataTransferIsReferenceReorderDrag(
+  dataTransfer: DataTransfer | null,
+): boolean {
+  if (!dataTransfer?.types) return false;
+  const { types } = dataTransfer;
+  for (let i = 0; i < types.length; i++) {
+    if (types[i] === REFERENCE_REORDER_MIME) return true;
+  }
+  return false;
+}
+
 /** True when the drag likely carries local files (OS / browser file drag). */
 export function dataTransferMayContainFiles(
   dataTransfer: DataTransfer | null,
@@ -36,6 +50,27 @@ export function dataTransferMayContainFiles(
     if (types[i] === "Files") return true;
   }
   return false;
+}
+
+/** Reorder list by stable id: `toIndex` is insert-before (0 … length); `length` appends at end. */
+export function reorderLocalReferencesById<T extends { id: string }>(
+  prev: T[],
+  draggedId: string,
+  toIndex: number,
+): T[] {
+  const fromIndex = prev.findIndex((r) => r.id === draggedId);
+  if (fromIndex < 0) return prev;
+  const next = [...prev];
+  const [moved] = next.splice(fromIndex, 1);
+  const lenAfterRemove = next.length;
+  if (toIndex >= lenAfterRemove) {
+    next.push(moved);
+    return next;
+  }
+  let insert = toIndex;
+  if (fromIndex < toIndex) insert = toIndex - 1;
+  next.splice(insert, 0, moved);
+  return next;
 }
 
 /** Image files from a drag-and-drop `DataTransfer` (OS files and in-browser file items). */
