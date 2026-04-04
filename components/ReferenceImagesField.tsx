@@ -465,18 +465,10 @@ export function ReferenceImagesField({
         ) : null}
       </div>
       <p className="mb-3 text-xs leading-relaxed text-zinc-600 dark:text-zinc-500">
-        Upload images to edit, compose, or use as style references. Each file is
-        sent to S3 as soon as you add them (spinner on the thumbnail until
-        ready).         Drag ready thumbnails to reorder them (on phones, use the arrows under
-        each thumbnail). Dropping files from elsewhere still adds new references.
-        You can drop images anywhere on the
-        page. Generate stays fast
-        once uploads finish.
-        Response modalities are set automatically (image-only for text-only
-        prompts; text+image when references are present). Up to{" "}
-        {maxReferenceImages} images for this model.
+        Optional images to guide style or layout. Drag thumbnails to reorder, or
+        use the arrows on small screens. Up to {maxReferenceImages} images.
         {batchMode
-          ? " In batch mode, the same references are sent with every prompt."
+          ? " In batch mode, these apply to every prompt."
           : ""}
         {referenceSession === "signedOut" ? (
           <>
